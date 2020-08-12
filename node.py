@@ -1,4 +1,4 @@
-from threading import Thread
+from threading import Thread, Lock
 from queue import Queue
 from typing import Callable, List
 import asyncio
@@ -6,9 +6,11 @@ import socket
 import sys
 import enum
 
+
 class ConnectionType(enum.Enum):
-    INCOMING=0,
-    OUTGOING=1
+    INCOMING = 0,
+    OUTGOING = 1
+
 
 class Node:
     """
@@ -28,6 +30,10 @@ class Node:
         self.sock = None
         self.blocking = blocking
         self.msg_ending = msg_ending
+
+        self.socks_lock = Lock()
+        self.out_socks = set()
+        self.in_socks = set()
 
     def start(self) -> None:
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -50,6 +56,10 @@ class Node:
     def send(self, sock: socket.socket, msg: str) -> None:
         msg += self.msg_ending
         sock.sendall(msg.encode('utf-8'))
+
+    def send_to_outgoing_conns(self, msg: str) -> None:
+        for sock in self.out_socks:
+            self.send(sock, msg)
 
     def read(self, sock: socket.socket, leftover: str) -> (List[str], str):
         """
@@ -76,10 +86,12 @@ class Node:
                 sock, address[0], address[1], ConnectionType.INCOMING))
             peer_thread.start()
 
-    def __handle_client(self, sock: socket.socket, ip: str, port: str, conn_type: ConnectionType) -> None:
+    def __handle_client(self, sock: socket.socket, ip: str, port: str,
+                        conn_type: ConnectionType) -> None:
+        self.__store_sock(sock, conn_type)
         if self.handle_conn_func:
             self.handle_conn_func(sock, ip, port, conn_type)
-
+        self.__unstore_sock(sock, conn_type)
 
     def __connect_to(self, ip: str, port: str) -> None:
         try:
@@ -87,3 +99,17 @@ class Node:
             self.__handle_client(sock, ip, port, ConnectionType.OUTGOING)
         except Exception:
             return
+
+    def __store_sock(self, sock: socket.socket, conn_type: ConnectionType) -> None:
+        with self.socks_lock:
+            if conn_type == ConnectionType.INCOMING:
+                self.in_socks.add(sock)
+            else:
+                self.out_socks.add(sock)
+
+    def __unstore_sock(self, sock: socket.socket, conn_type: ConnectionType) -> None:
+        with self.socks_lock:
+            if conn_type == ConnectionType.INCOMING:
+                self.in_socks.remove(sock)
+            else:
+                self.out_socks.remove(sock)
