@@ -22,10 +22,10 @@ class Node:
 
     RECV_SIZE = 1024
 
-    def __init__(self, port: int, handle_conn_func: Callable[[socket.socket, str, str, ConnectionType], None] = None,
+    def __init__(self, ip: str, port: int, handle_conn_func: Callable[[socket.socket, str, str, ConnectionType], None] = None,
                  blocking: bool = True, msg_ending='\n') -> None:
         self.port = port
-        self.ip = socket.gethostname()
+        self.ip = ip
         self.handle_conn_func = handle_conn_func
         self.sock = None
         self.blocking = blocking
