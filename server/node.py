@@ -61,6 +61,12 @@ class Node:
         for sock in self.out_socks:
             self.send(sock, msg)
 
+    def send_to_all(self, msg: str) -> None:
+        for sock in self.out_socks:
+            self.send(sock, msg)
+        for sock in self.in_socks:
+            self.send(sock, msg)
+
     def read(self, sock: socket.socket, leftover: str) -> (List[str], str):
         """
         Read message from a socket. It returns a list of each individual message as well as any leftover in the read.

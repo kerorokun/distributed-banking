@@ -1,6 +1,6 @@
+from __future__ import annotations
 from typing import NamedTuple, List
 import json
-from __future__ import annotations
 
 
 class AppendEntriesMessage(NamedTuple):
@@ -16,11 +16,11 @@ class AppendEntriesMessage(NamedTuple):
 
     @staticmethod
     def serialize(msg: AppendEntriesMessage) -> str:
-        return f"APPEND_ENTRIES {msg.term} {msg.leader_id} {msg.prev_log_index} {msg.prev_log_term} {msg.leader_commit} {msg.entries}"
+        return f"APPEND_ENTRIES {msg.term} {msg.leader_id} {msg.prev_log_index} {json.dumps(msg.prev_log_term)} {msg.leader_commit} {msg.entries}"
 
     term: int
     leader_id: str
     prev_log_index: int
-    prev_log_term: int
+    prev_log_term: object
     leader_commit: int
     entries: List[str]
