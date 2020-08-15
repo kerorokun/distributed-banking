@@ -62,10 +62,12 @@ class Node:
             self.send(sock, msg)
 
     def send_to_all(self, msg: str) -> None:
+        self.socks_lock.acquire()
         for sock in self.out_socks:
             self.send(sock, msg)
         for sock in self.in_socks:
             self.send(sock, msg)
+        self.socks_lock.release()
 
     def read(self, sock: socket.socket, leftover: str) -> (List[str], str):
         """

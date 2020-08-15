@@ -1,31 +1,41 @@
-from .state import RAFTState
+from .common import RAFTStateInfo
 from messages.append_entries import AppendEntriesMessage
+from threading import Timer
 import time
 
 
 class RAFTLeader:
 
-    HEARTBEAT_TIME = 0.12
+    HEARTBEAT_TIME = 0.3
 
-    def __init__(self, state, node):
-        self.state = state
-        self.server_node = node
-        self.next_heartbeat_time = None
+    def __init__(self, state_machine, state, node):
+        self.state_machine = state_machine
+        self.info = state
+        self.server = node
+        self.timer = Timer(RAFTLeader.HEARTBEAT_TIME, self.on_timeout)
 
-        print("Node is now in leader state")
+    def on_msg(self, sock, msg):
+        pass
 
-    def step(self):
-        if not self.next_heartbeat_time:
-            self.next_heartbeat_time = time.time() + RAFTLeader.HEARTBEAT_TIME
-        if time.time() >= self.next_heartbeat_time:
-            msg = AppendEntriesMessage(self.state.curr_term,
-                                       self.state.id,
-                                       0, None, 0, [])
+    def on_enter(self):
+        print(f"Node is now in leader state for {self.info.curr_term}")
+        self.__send_heartbeat()
 
-            self.server_node.send_to_outgoing_conns(
-                AppendEntriesMessage.serialize(msg))
-            self.next_heartbeat_time = time.time() + RAFTLeader.HEARTBEAT_TIME
-        return self
+    def on_exit(self):
+        self.timer.cancel()
+    
+    def on_timeout(self):
+        # Send heartbeat message
+        self.__send_heartbeat()
 
-    def handle_msg(self, sock, msg):
-        return self
+    def __send_heartbeat(self):
+        msg = AppendEntriesMessage(self.info.curr_term, self.info.id, 0, None, 0, [])
+        self.server.send_to_all(AppendEntriesMessage.serialize(msg))
+        self.__restart_timer()
+
+    def __restart_timer(self):
+        self.timer.cancel()
+        self.timer = Timer(RAFTLeader.HEARTBEAT_TIME, self.on_timeout)
+        self.timer.start()
+
+

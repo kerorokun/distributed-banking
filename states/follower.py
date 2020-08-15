@@ -1,8 +1,7 @@
-from .state import RAFTState
-from .candidate import RAFTCandidate
 from messages.append_entries import AppendEntriesMessage
 from messages.request_vote import RequestVoteMessage, RequestVoteReply
-from threading import Lock
+from threading import Lock, Timer
+from .common import get_next_election_timeout, RAFTStates
 import socket
 import random
 import time
@@ -10,48 +9,51 @@ import time
 
 class RAFTFollower:
 
-    def __init__(self, state, node):
+    def __init__(self, state_machine, state, node):
+        self.state_machine = state_machine
         self.state = state
-        self.server_node = node
-        self.target_time = None
+        self.server = node
         self.vote_lock = Lock()
-        print(self.state.id)
+        self.timer = Timer(get_next_election_timeout(), self.on_timeout)
+
+    def on_enter(self):
         print("Node is now in follower state")
+        self.timer.start()
 
-    def step(self):
-        if not self.target_time:
-            self.target_time = time.time() + random.uniform(.15, 3)
-        if time.time() >= self.target_time:
-            # Timed out; go into the candidate state
-            print("Timed out. Changing to candidate state...")
-            return RAFTCandidate(state=self.state, node=self.server_node)
-        return self
+    def on_exit(self):
+        pass
 
-    def handle_msg(self, sock: socket.socket, msg: str):
+    def on_timeout(self):
+        print("[RAFT] Timed out")
+        self.state_machine.change_to(RAFTStates.CANDIDATE)
+
+    def on_msg(self, sock: socket.socket, msg: str):
         # TODO: Think of a more flexible way to determine the msg type
         if msg.startswith("APPEND_ENTRIES"):
-            return self.handle_append_entries(sock, msg)
+            self.__on_append_msg(sock, msg)
         elif msg.startswith("REQUEST_VOTE_REQUEST"):
-            return self.handle_request_vote(sock, msg)
-        return self
+            self.__on_request_vote(sock, msg)
 
-    def handle_request_vote(self, sock: socket.socket, msg: str):
+    def __on_request_vote(self, sock: socket.socket, msg: str):
         msg = RequestVoteMessage.deserialize(msg)
-        with self.vote_lock:
-            if msg.term <= self.state.curr_term:
-                print("Already voted")
-                return self
-        
-        print("Received request. Voting for..")
-        reply = RequestVoteReply(msg.term, True)
-        with self.vote_lock:
-            self.state.curr_term = msg.term
-        self.target_time = time.time() + random.uniform(1, 3)
-        self.server_node.send(sock, RequestVoteReply.serialize(reply))
-        return self
 
-    def handle_append_entries(self, sock: socket.socket, msg: str):
+        self.vote_lock.acquire()
+        if msg.term <= self.state.curr_term:
+            print("[RAFT] Already voted")
+        else:
+            print(f"[RAFT] Received request. Voting for {msg.candidate_id}")
+            reply = RequestVoteReply(msg.term, True)
+            self.__restart_timer()
+            self.state.curr_term = msg.term
+            self.server.send(sock, RequestVoteReply.serialize(reply))
+        self.vote_lock.release()
+
+    def __restart_timer(self):
+        self.timer.cancel()
+        self.timer = Timer(get_next_election_timeout(), self.on_timeout)
+        self.timer.start()
+
+    def __on_append_msg(self, sock: socket.socket, msg: str):
         # Double check that this is a valid append entries
         msg = AppendEntriesMessage.deserialize(msg)
-        self.target_time = time.time() + (random.uniform(.15, 3))
-        return self
+        self.__restart_timer()

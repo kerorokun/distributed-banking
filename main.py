@@ -2,10 +2,9 @@ from threading import Thread, Lock
 from queue import Queue
 from server.node import Node, ConnectionType
 from typing import List
+from states.state import RAFTStateMachine
+from states.common import RAFTStates
 import typing
-from states.follower import RAFTFollower
-from states.leader import RAFTLeader
-from states.state import RAFTState
 import random
 import socket
 import sys
@@ -15,37 +14,33 @@ import enum
 
 class RAFTNode:
 
-    def __init__(self, id: str, port: int, initial_conns: List = []):
+    def __init__(self, id: str, port: int):
         # TODO: Add the ability to specify the address of the node
         self.node = Node("localhost", port, self.handle_conn, blocking=False)
         self.id = id
         self.connected_id_to_socket = {}
         self.connected_lock = Lock()
-        self.leader_id = ""
-
-        initial_conns = set(initial_conns)
-        self.state_info = RAFTState(id=self.id, num_neighbors=len(initial_conns)+1)
-        self.state = RAFTFollower(state=self.state_info, node=self.node)
-
         self.state_lock = Lock()
+        self.state_machine = None
 
-        self.__start(initial_conns)
-
-    def __start(self, initial_conns: List = []):
+    def start(self, initial_conns: List = []):
         self.node.start()
 
         # Connect to the other nodes in the group
+        initial_conns = set(initial_conns)
         print(f"Connecting to: {initial_conns}")
         for conn in initial_conns:
             if not conn in self.connected_id_to_socket:
                 self.node.connect_to(conn[0], conn[1])
-
         # TODO: Figure out a better way to wait for all the connections to be made
         time.sleep(3)
 
+        self.state_machine = RAFTStateMachine(self.node)
+        self.state_machine.state_info.id = self.id
+        self.state_machine.state_info.cluster_size = len(initial_conns) + 1
+        self.state_machine.change_to(RAFTStates.FOLLOWER)
         while True:
-            with self.state_lock:
-                self.state = self.state.step()
+            pass
 
     def handle_conn(self, sock: socket.socket, ip: str, port: str, conn_type: ConnectionType) -> None:
         self.node.send(sock, f"ID: {self.id}")
@@ -53,8 +48,8 @@ class RAFTNode:
         leftover = ''
         id = ""
         processed_greeting = False
-        should_continue = True
-        while should_continue:
+        should_loop = True
+        while should_loop:
             try:
                 msgs, leftover = self.node.read(sock, leftover)
                 for msg in msgs:
@@ -63,10 +58,9 @@ class RAFTNode:
                         id = self.__handle_new_conn(sock, msg)
                         processed_greeting = True
                         if not id:
-                            should_continue = False
-                    
-                    with self.state_lock:
-                        self.state = self.state.handle_msg(sock, msg)
+                            should_loop = False
+                    else:
+                        self.state_machine.on_msg(sock, msg)
             except IOError:
                 break
         if id:
@@ -86,8 +80,9 @@ class RAFTNode:
 
 
 if __name__ == "__main__":
-    # Usage: main.py <id> <type> <port> <others...>
+    # Usage: main.py <id> <port> <others...>
     neighbors = []
     for i in range(3, len(sys.argv), 2):
         neighbors.append((sys.argv[i], sys.argv[i+1]))
-    raft_node = RAFTNode(sys.argv[1], int(sys.argv[2]), neighbors)
+    raft_node = RAFTNode(sys.argv[1], int(sys.argv[2]))
+    raft_node.start(neighbors)

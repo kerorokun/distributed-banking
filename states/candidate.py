@@ -1,61 +1,59 @@
-from .state import RAFTState
+from .common import RAFTStateInfo, RAFTStates, get_next_election_timeout
 from .leader import RAFTLeader
 from messages.request_vote import RequestVoteMessage, RequestVoteReply
 from messages.append_entries import AppendEntriesMessage
+from threading import Timer
 import time
 import random
 
 
 class RAFTCandidate:
 
-    def __init__(self, state: RAFTState, node):
-        self.state = state
+    def __init__(self, state_machine, state_info: RAFTStateInfo, node):
+        self.state_machine = state_machine
+        self.info = state_info
         self.server_node = node
+        self.target_votes = -1
+        self.timer = Timer(get_next_election_timeout(), self.on_timeout)
 
-        print("Node is now in candidate state.")
-        print(self.state)
-        # Start the election
+    def on_enter(self):
+        print("[RAFT] Node is now in candidate state.")
+        self.__start_election()
+
+    def on_exit(self):
+        self.timer.cancel()
+
+    def on_timeout(self):
         self.__start_election()
 
     def __start_election(self):
-        self.num_votes = 1
-        self.state.curr_term += 1
-        self.election_timeout = time.time() + random.uniform(10, 30)
+        self.info.curr_term += 1
 
-        print(f"Starting election. I need {self.state.num_neighbors // 2 + 1}")
-
-        # Send messages to all connections
         request = RequestVoteMessage(
-            self.state.curr_term, self.state.id, 0, None)
+            self.info.curr_term, self.info.id, 0, None)
         self.server_node.send_to_all(RequestVoteMessage.serialize(request))
 
-    def step(self):
-        if time.time() >= self.election_timeout:
-            self.__start_election()
-            return self
-        if self.num_votes > self.state.num_neighbors // 2:
-            return self.handle_election_win()
-        return self
+        self.num_votes = 1
+        self.target_votes = self.info.cluster_size // 2 + 1
+        self.__restart_timer()
+        print(f"[RAFT] Election: {self.num_votes}/{self.target_votes}")
 
-    def handle_election_win(self):
-        # Send leader to everyone
-        request = AppendEntriesMessage(self.state.curr_term,
-                                       self.state.id,
-                                       0, None, 0, [])
-        self.server_node.send_to_all(AppendEntriesMessage.serialize(request))
-        return RAFTLeader(state=self.state, node=self.server_node)
-
-    def handle_msg(self, sock, msg):
+    def on_msg(self, sock, msg):
+        print(f"[RAFT-CANDIDATE] {msg}")
         if msg.startswith("REQUEST_VOTE_REPLY"):
-            return self.handle_vote_reply(sock, msg)
-        return self
+            self.__on_vote_reply(sock, msg)
 
-    def handle_vote_reply(self, sock, msg):
+    def __on_vote_reply(self, sock, msg):
         reply = RequestVoteReply.deserialize(msg)
         print(reply)
         if reply.vote_granted:
             self.num_votes += 1
-            print("Received a vote")
-            if self.num_votes > self.state.num_neighbors // 2:
-                return self.handle_election_win()
-        return self
+            print(f"[RAFT] Election: {self.num_votes}/{self.target_votes}")
+            if self.num_votes >= self.target_votes:
+                self.state_machine.change_to(RAFTStates.LEADER)
+
+    def __restart_timer(self):
+        self.timer.cancel()
+        self.timer = Timer(get_next_election_timeout(), self.on_timeout)
+        self.timer.start()
+
