@@ -24,6 +24,7 @@ class RAFTCandidate:
         self.timer.cancel()
 
     def on_timeout(self):
+        self.timer.cancel()
         self.__start_election()
 
     def __start_election(self):
@@ -36,12 +37,19 @@ class RAFTCandidate:
         self.num_votes = 1
         self.target_votes = self.info.cluster_size // 2 + 1
         self.__restart_timer()
-        print(f"[RAFT] Election: {self.num_votes}/{self.target_votes}")
+        print(f"[RAFT] Election {self.info.curr_term}: {self.num_votes}/{self.target_votes}")
 
     def on_msg(self, sock, msg):
-        print(f"[RAFT-CANDIDATE] {msg}")
         if msg.startswith("REQUEST_VOTE_REPLY"):
             self.__on_vote_reply(sock, msg)
+        elif msg.startswith("APPEND_ENTRIES"):
+            self.__on_append_entries_request(sock, msg)
+
+    def __on_append_entries_request(self, sock, msg):
+        msg = AppendEntriesMessage.deserialize(msg)
+
+        if msg.term >= self.info.curr_term:
+            self.state_machine.change_to(RAFTStates.FOLLOWER)
 
     def __on_vote_reply(self, sock, msg):
         reply = RequestVoteReply.deserialize(msg)

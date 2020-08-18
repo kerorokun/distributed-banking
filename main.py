@@ -18,27 +18,27 @@ class RAFTNode:
         # TODO: Add the ability to specify the address of the node
         self.node = Node("localhost", port, self.handle_conn, blocking=False)
         self.id = id
-        self.connected_id_to_socket = {}
+        self.connected_ids = set()
+        self.id_to_socket = {}
         self.connected_lock = Lock()
         self.state_lock = Lock()
         self.state_machine = None
 
     def start(self, initial_conns: List = []):
-        self.node.start()
-
-        # Connect to the other nodes in the group
         initial_conns = set(initial_conns)
-        print(f"Connecting to: {initial_conns}")
-        for conn in initial_conns:
-            if not conn in self.connected_id_to_socket:
-                self.node.connect_to(conn[0], conn[1])
-        # TODO: Figure out a better way to wait for all the connections to be made
-        time.sleep(3)
+        self.node.start()
 
         self.state_machine = RAFTStateMachine(self.node)
         self.state_machine.state_info.id = self.id
         self.state_machine.state_info.cluster_size = len(initial_conns) + 1
         self.state_machine.change_to(RAFTStates.FOLLOWER)
+
+        # Connect to the other nodes in the group
+        print(f"Connecting to: {initial_conns}")
+        for conn in initial_conns:
+            self.node.connect_to(conn[0], conn[1])
+        time.sleep(3)
+
         while True:
             pass
 
@@ -49,8 +49,8 @@ class RAFTNode:
         id = ""
         processed_greeting = False
         should_loop = True
-        while should_loop:
-            try:
+        try:
+            while should_loop:
                 msgs, leftover = self.node.read(sock, leftover)
                 for msg in msgs:
                     # Handle the first connection
@@ -61,21 +61,26 @@ class RAFTNode:
                             should_loop = False
                     else:
                         self.state_machine.on_msg(sock, msg)
-            except IOError:
-                break
-        if id:
+        except Exception as e:
+            print(e)
+            pass
+        if id and id in self.connected_ids:
+            print(f"Lost connection with {id}")
             with self.connected_lock:
-                self.connected_id_to_socket.pop(id, None)
+                self.connected_ids.remove(id)
+                self.id_to_socket.pop(id, None)
 
     def __handle_new_conn(self, sock: socket.socket, greeting: str) -> str:
         _, id = greeting.split()
         with self.connected_lock:
-            if id == self.id or id in self.connected_id_to_socket and self.connected_id_to_socket[id]:
+            if ((id == self.id) or
+                (id in self.connected_ids)):
                 print(f"{id} already connected. Dropping...")
                 id = None
             else:
                 print(f"Added new connection {id}")
-                self.connected_id_to_socket[id] = sock
+                self.connected_ids.add(id)
+                self.id_to_socket[id] = sock
         return id
 
 

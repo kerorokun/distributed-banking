@@ -55,7 +55,10 @@ class Node:
 
     def send(self, sock: socket.socket, msg: str) -> None:
         msg += self.msg_ending
-        sock.sendall(msg.encode('utf-8'))
+        try:
+            sock.sendall(msg.encode('utf-8'))
+        except:
+            pass
 
     def send_to_outgoing_conns(self, msg: str) -> None:
         for sock in self.out_socks:

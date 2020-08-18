@@ -11,7 +11,7 @@ class RAFTFollower:
 
     def __init__(self, state_machine, state, node):
         self.state_machine = state_machine
-        self.state = state
+        self.info = state
         self.server = node
         self.vote_lock = Lock()
         self.timer = Timer(get_next_election_timeout(), self.on_timeout)
@@ -21,7 +21,7 @@ class RAFTFollower:
         self.timer.start()
 
     def on_exit(self):
-        pass
+        self.timer.cancel()
 
     def on_timeout(self):
         print("[RAFT] Timed out")
@@ -38,13 +38,13 @@ class RAFTFollower:
         msg = RequestVoteMessage.deserialize(msg)
 
         self.vote_lock.acquire()
-        if msg.term <= self.state.curr_term:
+        if msg.term <= self.info.curr_term:
             print("[RAFT] Already voted")
         else:
             print(f"[RAFT] Received request. Voting for {msg.candidate_id}")
             reply = RequestVoteReply(msg.term, True)
             self.__restart_timer()
-            self.state.curr_term = msg.term
+            self.info.curr_term = msg.term
             self.server.send(sock, RequestVoteReply.serialize(reply))
         self.vote_lock.release()
 
@@ -55,5 +55,8 @@ class RAFTFollower:
 
     def __on_append_msg(self, sock: socket.socket, msg: str):
         # Double check that this is a valid append entries
+        print(msg)
         msg = AppendEntriesMessage.deserialize(msg)
-        self.__restart_timer()
+        if msg.term >= self.info.curr_term:
+            self.info.curr_term = msg.term
+            self.__restart_timer()
