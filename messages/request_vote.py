@@ -16,6 +16,10 @@ class RequestVoteMessage(NamedTuple):
     def serialize(msg: RequestVoteMessage) -> str:
         return f"REQUEST_VOTE_REQUEST {msg.term} {msg.candidate_id} {msg.last_log_index} {json.dumps(msg.last_log_term)}"
 
+    @staticmethod
+    def does_match(msg: str) -> bool:
+        return msg.startswith("REQUEST_VOTE_REQUEST")
+
     term: int
     candidate_id: str
     last_log_index: int
@@ -32,6 +36,10 @@ class RequestVoteReply(NamedTuple):
     @staticmethod
     def serialize(msg: RequestVoteMessage) -> str:
         return f"REQUEST_VOTE_REPLY {msg.term} {msg.vote_granted}"
-
+    
+    @staticmethod
+    def does_match(msg: str) -> bool:
+        return msg.startswith("REQUEST_VOTE_REPLY")
+    
     term: int
     vote_granted: bool

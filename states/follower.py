@@ -1,10 +1,11 @@
-from messages.append_entries import AppendEntriesMessage
+from messages.append_entries import AppendEntriesRequest
 from messages.request_vote import RequestVoteMessage, RequestVoteReply
 from threading import Lock, Timer
 from .common import get_next_election_timeout, RAFTStates
 import socket
 import random
 import time
+import logging as log
 
 
 class RAFTFollower:
@@ -17,21 +18,20 @@ class RAFTFollower:
         self.timer = Timer(get_next_election_timeout(), self.on_timeout)
 
     def on_enter(self):
-        print("Node is now in follower state")
+        log.debug(f"[RAFT] Node is now in follower state under {self.info.leader_id}.")
         self.timer.start()
 
     def on_exit(self):
         self.timer.cancel()
 
     def on_timeout(self):
-        print("[RAFT] Timed out")
+        log.debug("[RAFT] Timed out")
         self.state_machine.change_to(RAFTStates.CANDIDATE)
 
     def on_msg(self, sock: socket.socket, msg: str):
-        # TODO: Think of a more flexible way to determine the msg type
-        if msg.startswith("APPEND_ENTRIES"):
+        if AppendEntriesRequest.does_match(msg):
             self.__on_append_msg(sock, msg)
-        elif msg.startswith("REQUEST_VOTE_REQUEST"):
+        elif RequestVoteMessage.does_match(msg):
             self.__on_request_vote(sock, msg)
 
     def __on_request_vote(self, sock: socket.socket, msg: str):
@@ -39,9 +39,9 @@ class RAFTFollower:
 
         self.vote_lock.acquire()
         if msg.term <= self.info.curr_term:
-            print("[RAFT] Already voted")
+            log.debug("[RAFT] Already voted")
         else:
-            print(f"[RAFT] Received request. Voting for {msg.candidate_id}")
+            log.debug(f"[RAFT] Received request. Voting for {msg.candidate_id}")
             reply = RequestVoteReply(msg.term, True)
             self.__restart_timer()
             self.info.curr_term = msg.term
@@ -55,8 +55,10 @@ class RAFTFollower:
 
     def __on_append_msg(self, sock: socket.socket, msg: str):
         # Double check that this is a valid append entries
-        print(msg)
-        msg = AppendEntriesMessage.deserialize(msg)
+        msg = AppendEntriesRequest.deserialize(msg)
         if msg.term >= self.info.curr_term:
+            if msg.term > self.info.curr_term:
+                log.debug(f"[RAFT] Node is now in follower state under {self.info.leader_id}.")
             self.info.curr_term = msg.term
+            self.info.leader_id = msg.leader_id
             self.__restart_timer()

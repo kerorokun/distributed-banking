@@ -1,10 +1,10 @@
 from threading import Thread, Lock
-from queue import Queue
 from typing import Callable, List
-import asyncio
+from collections import defaultdict
 import socket
 import sys
 import enum
+import logging as log
 
 
 class ConnectionType(enum.Enum):
@@ -18,20 +18,28 @@ class Node:
     to incoming connections. This class also exposes the ability to connect to other nodes.
 
     NOTE: This node expects all messages to end with a specific sequence of characters. By default it uses newlines.
+    NOTE: If you wish to register a callback function to handle a connection, you should write a function that handles
+          (addr:str). You can pass this address to send and receive to send and write information to and from that 
+          address.
+    NOTE: This node also does not allow for simultaneous connections from the same address.
     """
 
     RECV_SIZE = 1024
 
-    def __init__(self, ip: str, port: int, handle_conn_func: Callable[[socket.socket, str, str, ConnectionType], None] = None,
+    def __init__(self,
+                 ip: str, port: int,
+                 handle_conn_func: Callable[[
+                     socket.socket, str, str, ConnectionType], None] = None,
                  blocking: bool = True, msg_ending='\n') -> None:
         self.port = port
         self.ip = ip
-        self.handle_conn_func = handle_conn_func
         self.sock = None
         self.blocking = blocking
         self.msg_ending = msg_ending
+        self.handle_conn_func = handle_conn_func
 
         self.socks_lock = Lock()
+        self.addr_to_sock = defaultdict(lambda: None)
         self.out_socks = set()
         self.in_socks = set()
 
@@ -41,14 +49,12 @@ class Node:
         self.sock.bind((self.ip, self.port))
         self.sock.listen()
 
-        print(f"Starting node at {self.ip} {self.port}")
+        log.debug(f"Starting node at {self.ip} {self.port}")
 
         if self.blocking:
             self.__listen_for_connections()
         else:
-            conn_thread = Thread(
-                target=self.__listen_for_connections, daemon=True)
-            conn_thread.start()
+            Thread(target=self.__listen_for_connections, daemon=True).start()
 
     def connect_to(self, ip: str, port: str) -> None:
         Thread(target=self.__connect_to, args=(ip, port), daemon=True).start()
@@ -59,10 +65,6 @@ class Node:
             sock.sendall(msg.encode('utf-8'))
         except:
             pass
-
-    def send_to_outgoing_conns(self, msg: str) -> None:
-        for sock in self.out_socks:
-            self.send(sock, msg)
 
     def send_to_all(self, msg: str) -> None:
         self.socks_lock.acquire()

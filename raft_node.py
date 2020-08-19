@@ -1,5 +1,4 @@
 from threading import Thread, Lock
-from queue import Queue
 from server.node import Node, ConnectionType
 from typing import List
 from states.state import RAFTStateMachine
@@ -10,13 +9,19 @@ import socket
 import sys
 import time
 import enum
+import logging as log
 
+root = log.getLogger()
+root.setLevel(log.DEBUG)
+
+handler = log.StreamHandler(sys.stdout)
+handler.setLevel(log.DEBUG)
+root.addHandler(handler)
 
 class RAFTNode:
 
-    def __init__(self, id: str, port: int):
-        # TODO: Add the ability to specify the address of the node
-        self.node = Node("localhost", port, self.handle_conn, blocking=False)
+    def __init__(self, id: str, ip: str, port: int):
+        self.node = Node(ip, port, self.handle_conn, blocking=False)
         self.id = id
         self.connected_ids = set()
         self.id_to_socket = {}
@@ -63,7 +68,7 @@ class RAFTNode:
                         self.state_machine.on_msg(sock, msg)
         except Exception as e:
             print(e)
-            pass
+
         if id and id in self.connected_ids:
             print(f"Lost connection with {id}")
             with self.connected_lock:
@@ -85,9 +90,9 @@ class RAFTNode:
 
 
 if __name__ == "__main__":
-    # Usage: main.py <id> <port> <others...>
+    # Usage: main.py <id> <ip> <port> <others...>
     neighbors = []
-    for i in range(3, len(sys.argv), 2):
+    for i in range(4, len(sys.argv), 2):
         neighbors.append((sys.argv[i], sys.argv[i+1]))
-    raft_node = RAFTNode(sys.argv[1], int(sys.argv[2]))
+    raft_node = RAFTNode(sys.argv[1], sys.argv[2], int(sys.argv[3]))
     raft_node.start(neighbors)
