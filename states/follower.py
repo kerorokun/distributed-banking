@@ -54,11 +54,8 @@ class RAFTFollower:
         self.timer.start()
 
     def __on_append_msg(self, sock: socket.socket, msg: str):
-        # Double check that this is a valid append entries
         msg = AppendEntriesRequest.deserialize(msg)
         if msg.term >= self.info.curr_term:
-            if msg.term > self.info.curr_term:
-                log.debug(f"[RAFT] Node is now in follower state under {self.info.leader_id}.")
             self.info.curr_term = msg.term
             self.info.leader_id = msg.leader_id
             self.__restart_timer()

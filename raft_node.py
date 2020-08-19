@@ -1,5 +1,5 @@
 from threading import Thread, Lock
-from server.node import Node, ConnectionType
+from server.node import Node, Connection
 from typing import List
 from states.state import RAFTStateMachine
 from states.common import RAFTStates
@@ -21,7 +21,7 @@ root.addHandler(handler)
 class RAFTNode:
 
     def __init__(self, id: str, ip: str, port: int):
-        self.node = Node(ip, port, self.handle_conn, blocking=False)
+        self.node = Node(ip, port, on_connect=self.on_connect, on_message=self.on_message)
         self.id = id
         self.connected_ids = set()
         self.id_to_socket = {}
@@ -31,7 +31,7 @@ class RAFTNode:
 
     def start(self, initial_conns: List = []):
         initial_conns = set(initial_conns)
-        self.node.start()
+        self.node.start(blocking=False)
 
         self.state_machine = RAFTStateMachine(self.node)
         self.state_machine.state_info.id = self.id
@@ -47,33 +47,12 @@ class RAFTNode:
         while True:
             pass
 
-    def handle_conn(self, sock: socket.socket, ip: str, port: str, conn_type: ConnectionType) -> None:
-        self.node.send(sock, f"ID: {self.id}")
+    def on_message(self, conn: Connection, msg: str) -> None:
+        # self.node.send(sock, f"ID: {self.id}")
+        self.state_machine.on_msg(conn, msg)
 
-        leftover = ''
-        id = ""
-        processed_greeting = False
-        should_loop = True
-        try:
-            while should_loop:
-                msgs, leftover = self.node.read(sock, leftover)
-                for msg in msgs:
-                    # Handle the first connection
-                    if not processed_greeting:
-                        id = self.__handle_new_conn(sock, msg)
-                        processed_greeting = True
-                        if not id:
-                            should_loop = False
-                    else:
-                        self.state_machine.on_msg(sock, msg)
-        except Exception as e:
-            print(e)
-
-        if id and id in self.connected_ids:
-            print(f"Lost connection with {id}")
-            with self.connected_lock:
-                self.connected_ids.remove(id)
-                self.id_to_socket.pop(id, None)
+    def on_connect(self, conn: Connection) -> None:
+        pass
 
     def __handle_new_conn(self, sock: socket.socket, greeting: str) -> str:
         _, id = greeting.split()

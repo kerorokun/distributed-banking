@@ -1,5 +1,5 @@
 from threading import Thread, Lock
-from typing import Callable, List
+from typing import Callable, List, NamedTuple
 from collections import defaultdict
 import socket
 import sys
@@ -7,9 +7,9 @@ import enum
 import logging as log
 
 
-class ConnectionType(enum.Enum):
-    INCOMING = 0,
-    OUTGOING = 1
+class Connection(NamedTuple):
+    ip: str
+    port: str
 
 
 class Node:
@@ -19,8 +19,8 @@ class Node:
 
     NOTE: This node expects all messages to end with a specific sequence of characters. By default it uses newlines.
     NOTE: If you wish to register a callback function to handle a connection, you should write a function that handles
-          (addr:str). You can pass this address to send and receive to send and write information to and from that 
-          address.
+          <void/T> ...(Connection conn). You can pass this address to send and receive to send and write information
+          to and from that address.
     NOTE: This node also does not allow for simultaneous connections from the same address.
     """
 
@@ -28,22 +28,23 @@ class Node:
 
     def __init__(self,
                  ip: str, port: int,
-                 handle_conn_func: Callable[[
-                     socket.socket, str, str, ConnectionType], None] = None,
-                 blocking: bool = True, msg_ending='\n') -> None:
-        self.port = port
+                 on_connect: Callable[[Connection], None] = None,
+                 on_disconnect: Callable[[Connection], None] = None,
+                 on_message: Callable[[Connection, str], None] = None,
+                 msg_ending='\n') -> None:
         self.ip = ip
+        self.port = port
         self.sock = None
-        self.blocking = blocking
         self.msg_ending = msg_ending
-        self.handle_conn_func = handle_conn_func
+        self.on_conn_callback = on_connect
+        self.on_disconn_callback = on_disconnect
+        self.on_message_callback = on_message
 
         self.socks_lock = Lock()
-        self.addr_to_sock = defaultdict(lambda: None)
-        self.out_socks = set()
-        self.in_socks = set()
+        self.conn_to_sock = defaultdict(lambda: None)
+        self.connected_socks = set()
 
-    def start(self) -> None:
+    def start(self, blocking: bool = True) -> None:
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.bind((self.ip, self.port))
@@ -51,7 +52,7 @@ class Node:
 
         log.debug(f"Starting node at {self.ip} {self.port}")
 
-        if self.blocking:
+        if blocking:
             self.__listen_for_connections()
         else:
             Thread(target=self.__listen_for_connections, daemon=True).start()
@@ -59,28 +60,26 @@ class Node:
     def connect_to(self, ip: str, port: str) -> None:
         Thread(target=self.__connect_to, args=(ip, port), daemon=True).start()
 
-    def send(self, sock: socket.socket, msg: str) -> None:
+    def __send(self, sock: socket.socket, msg: str) -> None:
         msg += self.msg_ending
         try:
             sock.sendall(msg.encode('utf-8'))
-        except:
-            pass
+        except Exception as e:
+            log.warn(f"[NODE] Error while sending {e}")
+
+    def send(self, conn: Connection, msg: str) -> None:
+        sock = self.conn_to_sock[conn]
+        self.__send(sock, msg)
 
     def send_to_all(self, msg: str) -> None:
         self.socks_lock.acquire()
-        for sock in self.out_socks:
-            self.send(sock, msg)
-        for sock in self.in_socks:
-            self.send(sock, msg)
+        for sock in self.connected_socks:
+            self.__send(sock, msg)
         self.socks_lock.release()
 
-    def read(self, sock: socket.socket, leftover: str) -> (List[str], str):
+    def __read(self, sock: socket.socket, leftover: str) -> (List[str], str):
         """
         Read message from a socket. It returns a list of each individual message as well as any leftover in the read.
-        NOTE: It is recommended that you do not touch the returned leftover. It is intended to be fed back into the 
-              call later on.
-        NOTE: This method purposely does not handle exceptions. An exception occurring usually means the socket has closed
-              so the caller is expected to handle that case appropriately
         """
         msg = sock.recv(Node.RECV_SIZE)
         msg = leftover + msg.decode('utf-8')
@@ -96,33 +95,76 @@ class Node:
         while True:
             sock, address = self.sock.accept()
             peer_thread = Thread(target=self.__handle_client, args=(
-                sock, address[0], address[1], ConnectionType.INCOMING))
+                sock, address[0], address[1]))
             peer_thread.start()
 
-    def __handle_client(self, sock: socket.socket, ip: str, port: str,
-                        conn_type: ConnectionType) -> None:
-        self.__store_sock(sock, conn_type)
-        if self.handle_conn_func:
-            self.handle_conn_func(sock, ip, port, conn_type)
-        self.__unstore_sock(sock, conn_type)
+    def __handle_client(self, sock: socket.socket, ip: str, port: str) -> None:
+        # Handle the introduction between nodes
+        self.__send(sock, f"NODE-INTRODUCTION {self.ip} {self.port}")
+        leftover = ""
+        initial_msgs = []
+        conn = None
+        found_introduction = False
+        try:
+            while not found_introduction:
+                msgs, leftover = self.__read(sock, leftover)
+                for msg in msgs:
+                    if msg.startswith("NODE-INTRODUCTION"):
+                        # Check to see if this is a new connection
+                        _, actual_ip, actual_port = msg.split()
+                        conn = Connection(actual_ip, actual_port)
+                        if not self.__is_new_connection(conn):
+                            sock.shutdown()
+                            sock.close()
+                            return
+                        else:
+                            found_introduction = True
+                    else:
+                        initial_msgs.append(msg)
+        except:
+            return
+
+        # Fully connected now. Can start communicating
+        self.__store_sock(sock, conn)
+        log.debug(f"[NODE] {conn} connected.")
+        if self.on_conn_callback:
+            self.on_conn_callback(conn)
+        msgs = initial_msgs
+        try:
+            while True:
+                for msg in msgs:
+                    if self.on_message_callback:
+                        self.on_message_callback(conn, msg)
+                msgs, leftover = self.__read(sock, leftover)
+        except socket.error as e:
+            log.debug(f"[NODE] {conn} disconnected.")
+        except Exception as e:
+            log.warn(f"[NODE] Error during execution: {e}")
+        self.__unstore_sock(sock, conn)
+        if self.on_disconn_callback:
+            self.on_disconn_callback(conn)
 
     def __connect_to(self, ip: str, port: str) -> None:
         try:
             sock = socket.create_connection((ip, port))
-            self.__handle_client(sock, ip, port, ConnectionType.OUTGOING)
+            self.__handle_client(sock, ip, port)
         except Exception:
             return
 
-    def __store_sock(self, sock: socket.socket, conn_type: ConnectionType) -> None:
-        with self.socks_lock:
-            if conn_type == ConnectionType.INCOMING:
-                self.in_socks.add(sock)
-            else:
-                self.out_socks.add(sock)
+    def __is_new_connection(self, conn: Connection) -> bool:
+        self.socks_lock.acquire()
+        is_new = self.conn_to_sock[conn] is None
+        self.socks_lock.release()
+        return is_new
 
-    def __unstore_sock(self, sock: socket.socket, conn_type: ConnectionType) -> None:
-        with self.socks_lock:
-            if conn_type == ConnectionType.INCOMING:
-                self.in_socks.remove(sock)
-            else:
-                self.out_socks.remove(sock)
+    def __store_sock(self, sock: socket.socket, conn: Connection) -> None:
+        self.socks_lock.acquire()
+        self.conn_to_sock[conn] = sock
+        self.connected_socks.add(sock)
+        self.socks_lock.release()
+
+    def __unstore_sock(self, sock: socket.socket, conn: Connection) -> None:
+        self.socks_lock.acquire()
+        self.conn_to_sock.pop(conn)
+        self.connected_socks.remove(sock)
+        self.socks_lock.release()
