@@ -16,12 +16,14 @@ class RAFTStateMachine:
     def __init__(self, server, initial_state_info=RAFTStateInfo()) -> None:
         self.server = server
         self.state_info = initial_state_info
+        self.curr_type = None
         self.curr_state = None
         self.state_lock = Lock()
 
     def change_to(self, state_type: RAFTStates) -> None:
         if self.curr_state:
             self.curr_state.on_exit()
+        self.curr_type = state_type
         self.curr_state = RAFTStateMachine.STATE_MAPPING[state_type](self, self.state_info, self.server)
         self.curr_state.on_enter()
 

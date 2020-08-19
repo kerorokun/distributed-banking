@@ -3,7 +3,7 @@ from typing import List
 import random
 
 def get_next_election_timeout():
-    return random.uniform(.8, 3)
+    return random.uniform(1.5, 3)
 
 class RAFTStates(Enum):
     FOLLOWER = 0,

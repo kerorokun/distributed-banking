@@ -1,6 +1,9 @@
+from __future__ import annotations
 from .common import RAFTStateInfo, RAFTStates
 from messages.append_entries import AppendEntriesRequest
 from messages.request_vote import RequestVoteMessage, RequestVoteReply
+from . import state
+from server.node import Connection, Node
 from threading import Timer, Lock
 import time
 import logging as log
@@ -11,24 +14,23 @@ class RAFTLeader:
     Represents the actions of a RAFT leader.
     """
 
-    HEARTBEAT_TIME = 0.12
+    HEARTBEAT_TIME = 0.75
 
-    def __init__(self, state_machine, state, node):
+    def __init__(self, state_machine: state.RAFTStateMachine, state: RAFTStates, node: Node):
         self.state_machine = state_machine
         self.info = state
         self.server = node
         self.timer = Timer(RAFTLeader.HEARTBEAT_TIME, self.on_timeout)
         self.vote_lock = Lock()
 
-    def on_msg(self, sock, msg) -> None:
+    def on_msg(self, sock: Connection, msg: str) -> None:
         if AppendEntriesRequest.does_match(msg):
             self.__on_append_entries_request(sock, msg)
         elif RequestVoteMessage.does_match(msg):
             self.__on_request_vote(sock, msg)
 
     def on_enter(self) -> None:
-        log.debug(
-            f"[RAFT] Node is now in leader state for {self.info.curr_term}.")
+        log.debug(f"[RAFT] Node is now leader for {self.info.curr_term}.")
         self.__send_heartbeat()
 
     def on_exit(self) -> None:
@@ -37,7 +39,7 @@ class RAFTLeader:
     def on_timeout(self) -> None:
         self.__send_heartbeat()
 
-    def __on_append_entries_request(self, sock, msg: str) -> None:
+    def __on_append_entries_request(self, sock: Connection, msg: str) -> None:
         msg = AppendEntriesRequest.deserialize(msg)
 
         if msg.term > self.info.curr_term:
@@ -45,7 +47,7 @@ class RAFTLeader:
             self.info.leader_id = msg.leader_id
             self.state_machine.change_to(RAFTStates.FOLLOWER)
 
-    def __on_request_vote(self, sock, msg: str) -> None:
+    def __on_request_vote(self, sock: Connection, msg: str) -> None:
         msg = RequestVoteMessage.deserialize(msg)
 
         self.vote_lock.acquire()
