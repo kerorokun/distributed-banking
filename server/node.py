@@ -42,6 +42,7 @@ class Node:
 
         self.socks_lock = Lock()
         self.conn_to_sock = defaultdict(lambda: None)
+        self.conn_to_should_conn = defaultdict(lambda: True)
         self.connected_socks = set()
 
     def start(self, blocking: bool = True) -> None:
@@ -126,23 +127,33 @@ class Node:
 
         # Fully connected now. Can start communicating
         self.__store_sock(sock, conn)
+        self.conn_to_should_conn[conn] = True
         log.debug(f"[NODE] {conn} connected.")
         if self.on_conn_callback:
             self.on_conn_callback(conn)
+
+        # Connection loop
         msgs = initial_msgs
         try:
-            while True:
+            while self.conn_to_should_conn[conn]:
                 for msg in msgs:
-                    if self.on_message_callback:
+                    if self.on_message_callback and self.conn_to_should_conn[conn]:
                         self.on_message_callback(conn, msg)
                 msgs, leftover = self.__read(sock, leftover)
         except socket.error as e:
             log.debug(f"[NODE] {conn} disconnected.")
         except Exception as e:
             log.warn(f"[NODE] Error during execution: {e}")
+
+        # Disconnect, cleanup
+        self.conn_to_should_conn.pop(conn)
         self.__unstore_sock(sock, conn)
         if self.on_disconn_callback:
             self.on_disconn_callback(conn)
+
+    def disconnect(self, conn: Connection) -> None:
+        log.debug(f"[NODE] Dropping {conn}")
+        self.conn_to_should_conn[conn] = False
 
     def __connect_to(self, ip: str, port: str) -> None:
         try:
