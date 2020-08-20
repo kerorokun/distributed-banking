@@ -4,8 +4,7 @@ import raft.messages.request_vote as raft_request_vote
 import raft.states.common as raft_state_common
 import raft.states.state as raft_state
 import server.node as node
-
-from threading import Timer, Lock
+import threading
 import time
 import logging as log
 
@@ -17,12 +16,16 @@ class RAFTLeader:
 
     HEARTBEAT_TIME = 0.75
 
-    def __init__(self, state_machine: raft_state.RAFTStateMachine, state: raft_state_common.RAFTStates, node: node.Node):
+    def __init__(self,
+                 state_machine: raft_state.RAFTStateMachine,
+                 state: raft_state_common.RAFTStates,
+                 node: node.Node):
         self.state_machine = state_machine
         self.info = state
         self.server = node
-        self.timer = Timer(RAFTLeader.HEARTBEAT_TIME, self.on_timeout)
-        self.vote_lock = Lock()
+        self.timer = threading.Timer(
+            RAFTLeader.HEARTBEAT_TIME, self.on_timeout)
+        self.vote_lock = threading.Lock()
 
     def on_msg(self, sock: node.Connection, msg: str) -> None:
         if raft_append_entries.AppendEntriesRequest.does_match(msg):
@@ -60,17 +63,20 @@ class RAFTLeader:
                 f"[RAFT] Received request. Voting for {msg.candidate_id}.")
             reply = raft_request_vote.RequestVoteReply(msg.term, True)
             self.info.curr_term = msg.term
-            self.server.send(sock, raft_request_vote.RequestVoteReply.serialize(reply))
+            self.server.send(
+                sock, raft_request_vote.RequestVoteReply.serialize(reply))
             self.vote_lock.release()
             self.state_machine.change_to(raft_state_common.RAFTStates.FOLLOWER)
 
     def __send_heartbeat(self) -> None:
         msg = raft_append_entries.AppendEntriesRequest(
             self.info.curr_term, self.info.id, 0, None, 0, [])
-        self.server.send_to_all(raft_append_entries.AppendEntriesRequest.serialize(msg))
+        self.server.send_to_all(
+            raft_append_entries.AppendEntriesRequest.serialize(msg))
         self.__restart_timer()
 
     def __restart_timer(self) -> None:
         self.timer.cancel()
-        self.timer = Timer(RAFTLeader.HEARTBEAT_TIME, self.on_timeout)
+        self.timer = threading.Timer(
+            RAFTLeader.HEARTBEAT_TIME, self.on_timeout)
         self.timer.start()
