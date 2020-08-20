@@ -1,9 +1,9 @@
 from __future__ import annotations
-from typing import NamedTuple, List
+import typing
 import json
 
 
-class RequestVoteMessage(NamedTuple):
+class RequestVoteMessage(typing.NamedTuple):
     @classmethod
     def deserialize(cls, serialized: str) -> RequestVoteMessage:
         _, term, leader_id, last_log_index, last_log_term = serialized.split()
@@ -26,7 +26,7 @@ class RequestVoteMessage(NamedTuple):
     last_log_term: object
 
 
-class RequestVoteReply(NamedTuple):
+class RequestVoteReply(typing.NamedTuple):
     @classmethod
     def deserialize(cls, serialized: str) -> RequestVoteReply:
         _, term, vote_granted = serialized.split()

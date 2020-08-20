@@ -1,13 +1,13 @@
-from threading import Thread, Lock
-from typing import Callable, List, NamedTuple
-from collections import defaultdict
+import collections
+import typing
+import threading
 import socket
 import sys
 import enum
 import logging as log
 
 
-class Connection(NamedTuple):
+class Connection(typing.NamedTuple):
     ip: str
     port: str
 
@@ -28,9 +28,9 @@ class Node:
 
     def __init__(self,
                  ip: str, port: int,
-                 on_connect: Callable[[Connection], None] = None,
-                 on_disconnect: Callable[[Connection], None] = None,
-                 on_message: Callable[[Connection, str], None] = None,
+                 on_connect: typing.Callable[[Connection], None] = None,
+                 on_disconnect: typing.Callable[[Connection], None] = None,
+                 on_message: typing.Callable[[Connection, str], None] = None,
                  msg_ending='\n') -> None:
         self.ip = ip
         self.port = port
@@ -40,9 +40,9 @@ class Node:
         self.on_disconn_callback = on_disconnect
         self.on_message_callback = on_message
 
-        self.socks_lock = Lock()
-        self.conn_to_sock = defaultdict(lambda: None)
-        self.conn_to_should_conn = defaultdict(lambda: True)
+        self.socks_lock = threading.Lock()
+        self.conn_to_sock = collections.defaultdict(lambda: None)
+        self.conn_to_should_conn = collections.defaultdict(lambda: True)
         self.connected_socks = set()
 
     def start(self, blocking: bool = True) -> None:
@@ -56,10 +56,12 @@ class Node:
         if blocking:
             self.__listen_for_connections()
         else:
-            Thread(target=self.__listen_for_connections, daemon=True).start()
+            threading.Thread(
+                target=self.__listen_for_connections, daemon=True).start()
 
     def connect_to(self, ip: str, port: str) -> None:
-        Thread(target=self.__connect_to, args=(ip, port), daemon=True).start()
+        threading.Thread(target=self.__connect_to,
+                         args=(ip, port), daemon=True).start()
 
     def __send(self, sock: socket.socket, msg: str) -> None:
         msg += self.msg_ending
@@ -78,7 +80,7 @@ class Node:
             self.__send(sock, msg)
         self.socks_lock.release()
 
-    def __read(self, sock: socket.socket, leftover: str) -> (List[str], str):
+    def __read(self, sock: socket.socket, leftover: str) -> (typing.List[str], str):
         """
         Read message from a socket. It returns a list of each individual message as well as any leftover in the read.
         """
@@ -95,7 +97,7 @@ class Node:
     def __listen_for_connections(self) -> None:
         while True:
             sock, address = self.sock.accept()
-            peer_thread = Thread(target=self.__handle_client, args=(
+            peer_thread = threading.Thread(target=self.__handle_client, args=(
                 sock, address[0], address[1]))
             peer_thread.start()
 

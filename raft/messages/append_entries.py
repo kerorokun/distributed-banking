@@ -1,9 +1,9 @@
 from __future__ import annotations
-from typing import NamedTuple, List
+import typing
 import json
 
 
-class AppendEntriesRequest(NamedTuple):
+class AppendEntriesRequest(typing.NamedTuple):
 
     MSG_PREFIX="APPEND_ENTRIES_REQ"
 
@@ -30,9 +30,9 @@ class AppendEntriesRequest(NamedTuple):
     prev_log_index: int
     prev_log_term: object
     leader_commit: int
-    entries: List[str]
+    entries: typing.List[str]
 
-class AppendEntriesReply(NamedTuple):
+class AppendEntriesReply(typing.NamedTuple):
 
     MSG_PREFIX="APPEND_ENTRIES_REPLY"
 

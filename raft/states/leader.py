@@ -1,9 +1,10 @@
 from __future__ import annotations
-from .common import RAFTStateInfo, RAFTStates
-from messages.append_entries import AppendEntriesRequest
-from messages.request_vote import RequestVoteMessage, RequestVoteReply
-from . import state
-from server.node import Connection, Node
+import raft.messages.append_entries as raft_append_entries
+import raft.messages.request_vote as raft_request_vote
+import raft.states.common as raft_state_common
+import raft.states.state as raft_state
+import server.node as node
+
 from threading import Timer, Lock
 import time
 import logging as log
@@ -16,17 +17,17 @@ class RAFTLeader:
 
     HEARTBEAT_TIME = 0.75
 
-    def __init__(self, state_machine: state.RAFTStateMachine, state: RAFTStates, node: Node):
+    def __init__(self, state_machine: raft_state.RAFTStateMachine, state: raft_state_common.RAFTStates, node: node.Node):
         self.state_machine = state_machine
         self.info = state
         self.server = node
         self.timer = Timer(RAFTLeader.HEARTBEAT_TIME, self.on_timeout)
         self.vote_lock = Lock()
 
-    def on_msg(self, sock: Connection, msg: str) -> None:
-        if AppendEntriesRequest.does_match(msg):
+    def on_msg(self, sock: node.Connection, msg: str) -> None:
+        if raft_append_entries.AppendEntriesRequest.does_match(msg):
             self.__on_append_entries_request(sock, msg)
-        elif RequestVoteMessage.does_match(msg):
+        elif raft_request_vote.RequestVoteMessage.does_match(msg):
             self.__on_request_vote(sock, msg)
 
     def on_enter(self) -> None:
@@ -39,16 +40,16 @@ class RAFTLeader:
     def on_timeout(self) -> None:
         self.__send_heartbeat()
 
-    def __on_append_entries_request(self, sock: Connection, msg: str) -> None:
-        msg = AppendEntriesRequest.deserialize(msg)
+    def __on_append_entries_request(self, sock: node.Connection, msg: str) -> None:
+        msg = raft_append_entries.AppendEntriesRequest.deserialize(msg)
 
         if msg.term > self.info.curr_term:
             self.info.curr_term = msg.term
             self.info.leader_id = msg.leader_id
-            self.state_machine.change_to(RAFTStates.FOLLOWER)
+            self.state_machine.change_to(raft_state_common.RAFTStates.FOLLOWER)
 
-    def __on_request_vote(self, sock: Connection, msg: str) -> None:
-        msg = RequestVoteMessage.deserialize(msg)
+    def __on_request_vote(self, sock: node.Connection, msg: str) -> None:
+        msg = raft_request_vote.RequestVoteMessage.deserialize(msg)
 
         self.vote_lock.acquire()
         if msg.term <= self.info.curr_term:
@@ -57,16 +58,16 @@ class RAFTLeader:
         else:
             log.debug(
                 f"[RAFT] Received request. Voting for {msg.candidate_id}.")
-            reply = RequestVoteReply(msg.term, True)
+            reply = raft_request_vote.RequestVoteReply(msg.term, True)
             self.info.curr_term = msg.term
-            self.server.send(sock, RequestVoteReply.serialize(reply))
+            self.server.send(sock, raft_request_vote.RequestVoteReply.serialize(reply))
             self.vote_lock.release()
-            self.state_machine.change_to(RAFTStates.FOLLOWER)
+            self.state_machine.change_to(raft_state_common.RAFTStates.FOLLOWER)
 
     def __send_heartbeat(self) -> None:
-        msg = AppendEntriesRequest(
+        msg = raft_append_entries.AppendEntriesRequest(
             self.info.curr_term, self.info.id, 0, None, 0, [])
-        self.server.send_to_all(AppendEntriesRequest.serialize(msg))
+        self.server.send_to_all(raft_append_entries.AppendEntriesRequest.serialize(msg))
         self.__restart_timer()
 
     def __restart_timer(self) -> None:
