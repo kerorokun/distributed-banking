@@ -26,6 +26,8 @@ class RAFTLeader:
         self.timer = threading.Timer(
             RAFTLeader.HEARTBEAT_TIME, self.on_timeout)
         self.vote_lock = threading.Lock()
+        self.next_index = []
+        self.match_index = []
 
     def on_msg(self, sock: node.Connection, msg: str) -> None:
         if raft_append_entries.AppendEntriesRequest.does_match(msg):

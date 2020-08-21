@@ -1,5 +1,14 @@
 import sys
 import os
+import logging as log
+
+root = log.getLogger()
+root.setLevel(log.DEBUG)
+
+handler = log.StreamHandler(sys.stdout)
+handler.setLevel(log.DEBUG)
+root.addHandler(handler)
+
 
 # NOTE: This is required to make this module work as a standalone.
 sys.path.append(os.path.abspath(".."))

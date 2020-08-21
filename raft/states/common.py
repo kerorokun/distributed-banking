@@ -2,8 +2,10 @@ from enum import Enum
 from typing import List
 import random
 
+
 def get_next_election_timeout():
     return random.uniform(1.5, 3)
+
 
 class RAFTStates(Enum):
     FOLLOWER = 0,
@@ -27,4 +29,3 @@ class RAFTStateInfo:
         self.voted_for_id = voted_for_id
         self.commit_index = commit_index
         self.log = []
-

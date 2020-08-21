@@ -6,7 +6,6 @@ import sys
 import enum
 import logging as log
 
-
 class Connection(typing.NamedTuple):
     ip: str
     port: str
@@ -44,6 +43,22 @@ class Node:
         self.conn_to_sock = collections.defaultdict(lambda: None)
         self.conn_to_should_conn = collections.defaultdict(lambda: True)
         self.connected_socks = set()
+ 
+    def open(self) -> None:
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.bind((self.ip, self.port))
+        self.sock.listen()
+
+        log.debug(f"Starting node at {self.ip} {self.port}")
+
+    def serve(self, blocking: bool = True) -> None:
+        if blocking:
+            self.__listen_for_connections()
+        else:
+            threading.Thread(
+                target=self.__listen_for_connections, daemon=True).start()
+
 
     def start(self, blocking: bool = True) -> None:
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -74,6 +89,10 @@ class Node:
         sock = self.conn_to_sock[conn]
         self.__send(sock, msg)
 
+    def send_to_conns(self, conns: typing.List[Connection], msg: str) -> None:
+        for conn in conns:
+            self.send(conn, msg)
+
     def send_to_all(self, msg: str) -> None:
         self.socks_lock.acquire()
         for sock in self.connected_socks:
@@ -95,11 +114,14 @@ class Node:
         return (msg_lines, leftover)
 
     def __listen_for_connections(self) -> None:
-        while True:
-            sock, address = self.sock.accept()
-            peer_thread = threading.Thread(target=self.__handle_client, args=(
-                sock, address[0], address[1]))
-            peer_thread.start()
+        try:
+            while True:
+                sock, address = self.sock.accept()
+                peer_thread = threading.Thread(target=self.__handle_client, args=(
+                    sock, address[0], address[1]))
+                peer_thread.start()
+        except KeyboardInterrupt:
+            return
 
     def __handle_client(self, sock: socket.socket, ip: str, port: str) -> None:
         # Handle the introduction between nodes
