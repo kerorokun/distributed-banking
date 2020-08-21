@@ -1,14 +1,14 @@
-import server.node as node
-import raft.messages.append_entries as append_entries
-import raft.messages.request_vote as request_vote
+from __future__ import annotations
 import logging as log
 import threading
 import typing
 import collections
-import sys
 import time
 import enum
 import random
+import server.node as node
+import raft.messages.append_entries as append_entries
+import raft.messages.request_vote as request_vote
 
 
 class RAFTStates(enum.Enum):
@@ -17,12 +17,46 @@ class RAFTStates(enum.Enum):
     LEADER = 2
 
 
+class LogEntry:
+
+    @classmethod
+    def from_json(cls, json_obj):
+        return cls(json_obj["term"], json_obj["val"])
+
+    def __init__(self, term: int, val: str):
+        self.term = term
+        self.val = val
+
+    def __repr__(self):
+        return f"LogEntry(term: {self.term}, val: {self.val})"
+
+
 class CommitTask:
 
     DEFAULT_TIMEOUT = 5
 
-    def __init__(self, timeout=5):
-        self.timeout = timeout
+    def __init__(self, target_votes, timeout=DEFAULT_TIMEOUT):
+        self.target_votes = target_votes
+        self.votes = 0
+        self.timer = threading.Timer(timeout, timeout)
+        self.event = threading.Event()
+        self.lock = threading.Lock()
+
+    def start(self) -> bool:
+        self.event.wait()
+
+    def add_commit(self):
+        with self.lock:
+            self.votes += 1
+            if self.votes > self.target_votes:
+                self.timer.cancel()
+                self.event.set()
+                self.success = True
+
+    def timeout(self) -> None:
+        self.success = False
+        self.event.set()
+        self.timer.cancel()
 
 
 class GroupConnectionInfo:
@@ -67,6 +101,9 @@ class GroupConnectionInfo:
             return None
         return self.conn_to_id[conn]
 
+    def get_ids(self):
+        return self.connected_ids
+
 
 class RAFTNode:
 
@@ -75,12 +112,18 @@ class RAFTNode:
     ELECTION_TIME_MAX = 3
 
     def __init__(self, id: str, ip: str, port: int,
+                 on_commit: typing.Callable[[int]] = None,
+                 on_connect: typing.Callable[[node.Node, node.Connection], None] = None,
+                 on_disconnect: typing.Callable[[node.Node, node.Connection], None] = None,
                  on_message: typing.Callable[[node.Node, node.Connection, str], None] = None):
         self.id = id
         self.node = node.Node(ip, port,
                               on_connect=self.on_connect,
                               on_message=self.__on_message,
                               on_disconnect=self.on_disconnect)
+        self.on_commit_callback = on_commit
+        self.on_connect_callback = on_connect
+        self.on_disconnect_callback = on_disconnect
         self.on_message_callback = on_message
         self.conns = GroupConnectionInfo(self.id)
         self.info = None
@@ -91,11 +134,15 @@ class RAFTNode:
         self.cluster_size = 0
         self.term = 0
         self.leader_id = ""
-        self.voted_for_id = 0
-        self.commit_index = 0
         self.log = []
+        self.commit_index = 0
+        self.last_applied = 0
         self.num_votes = 0
         self.target_votes = 0
+
+        self.next_indices = {}
+        self.match_indices = {}
+        self.tentative_nexts = {}
 
     def start(self, initial_conns: typing.List = []):
         self.node.start(blocking=False)
@@ -106,15 +153,20 @@ class RAFTNode:
         time.sleep(3)
 
         self.cluster_size = 1 + len(initial_conns)
-        self.state = RAFTStates.FOLLOWER
-        self.__reset_election_timer()
+        self.__change_to(RAFTStates.FOLLOWER)
 
         while True:
             pass
 
-    def commit(self, msg: str) -> None:
+    def commit(self, msg: str) -> bool:
         # Launches the work to come back and reply
-        pass
+        self.raft_lock.acquire()
+        success = False
+        if self.state == RAFTStates.LEADER:
+            self.log.append(LogEntry(self.term, msg))
+            success = True
+        self.raft_lock.release()
+        return success
 
     def on_connect(self, conn: node.Connection) -> None:
         self.node.send(conn, f"ID: {self.id}")
@@ -152,28 +204,66 @@ class RAFTNode:
         if self.state == RAFTStates.LEADER:
             self.__send_heartbeat()
         else:
-            self.state = RAFTStates.CANDIDATE
-            self.__start_election()
+            self.__change_to(RAFTStates.CANDIDATE)
         self.raft_lock.release()
 
     def __on_append_entries(self, conn: node.Connection, msg: str) -> bool:
         self.raft_lock.acquire()
         msg = append_entries.AppendEntriesRequest.deserialize(msg)
+        log.debug(f"[RAFT] {msg}")
 
-        if ((msg.term > self.term) or 
-            (msg.term == self.term and self.state == RAFTStates.CANDIDATE)):
-            self.term = msg.term
-            self.leader_id = msg.leader_id
-            self.state = RAFTStates.FOLLOWER
+        # [RPC (1) and (2)] Check if the AppendEntries is of interest
+        success = False
+        if ((msg.term >= self.term) and
+            (msg.prev_log_index < len(self.log)) and
+                (msg.prev_log_index < 0 or self.log[msg.prev_log_index].term == msg.prev_log_term)):
+            success = True
+
+            # Update the state if necessary
+            if self.state != RAFTStates.FOLLOWER:
+                self.term = msg.term
+                self.leader_id = msg.leader_id
+                self.__change_to(RAFTStates.FOLLOWER)
+
+            # [RPC (3), (4), (5)] Update the log
+            entries = [LogEntry.from_json(entry) for entry in msg.entries]
+            self.log = self.log[:msg.prev_log_index+1] + entries
+            self.commit_index = min(msg.leader_commit, len(self.log))
             self.__reset_election_timer()
-        elif msg.term == self.term and self.state == RAFTStates.FOLLOWER:
-            # TODO: Implement reply and checking of the log
-            self.__reset_election_timer()
+
+        # Reply back to the request
+        reply = append_entries.AppendEntriesReply(self.term, success)
+        self.node.send(conn, reply.serialize())
         self.raft_lock.release()
 
     def __on_append_entries_reply(self, conn: node.Connection, msg: str) -> bool:
         self.raft_lock.acquire()
-        # TODO: Implement committing
+        # TODO: Consider the situation when two heartbeats are sent before a reply from the first
+        if self.state != RAFTStates.LEADER:
+            self.raft_lock.release()
+            return
+
+        msg = append_entries.AppendEntriesReply.deserialize(msg)
+        c_id = self.conns.get_id(conn)
+        if not msg.success:
+            self.next_indices[c_id] -= 1
+            self.raft_lock.release()
+            return
+
+        self.next_indices[c_id] = max(self.next_indices[c_id], self.tentative_nexts[c_id])
+        self.match_indices[c_id] = max(self.match_indices[c_id], self.next_indices[c_id]-1)
+        self.tentative_nexts[c_id] = -1
+
+        # Check to see if a new commit can be included
+        match = self.match_indices[c_id]
+        if match > self.commit_index and self.log[match].term == self.term:
+            num_match = sum(1 for _, e in self.match_indices.items() if e >= match)
+            target_num = self.cluster_size // 2
+            if num_match >= target_num:
+                log.debug(f"[RAFT] Committed: {match}")
+                self.commit_index = match
+                if self.on_commit_callback:
+                    self.on_commit_callback(self.commit_index)
         self.raft_lock.release()
 
     def __on_request_vote(self, conn: node.Connection, msg: str) -> bool:
@@ -185,13 +275,12 @@ class RAFTNode:
         else:
             log.debug(
                 f"[RAFT] Received request. Voting for {msg.candidate_id}.")
-            
+
             self.term = msg.term
             reply = request_vote.RequestVoteReply(msg.term, True)
             reply = request_vote.RequestVoteReply.serialize(reply)
             self.node.send(conn, reply)
-            self.state = RAFTStates.FOLLOWER
-            self.__reset_election_timer()
+            self.__change_to(RAFTStates.FOLLOWER)
         self.raft_lock.release()
 
     def __on_request_vote_reply(self, conn: node.Connection, msg: str) -> bool:
@@ -205,14 +294,43 @@ class RAFTNode:
             self.num_votes += 1
             log.debug(f"[RAFT] Election: {self.num_votes}/{self.target_votes}")
             if self.num_votes >= self.target_votes:
-                self.state = RAFTStates.LEADER
-                self.__send_heartbeat()
+                self.__change_to(RAFTStates.LEADER)
         self.raft_lock.release()
 
+    def __change_to(self, state: RAFTStates) -> None:
+        if state == RAFTStates.LEADER:
+            self.state = RAFTStates.LEADER
+            log.debug("[RAFT] Now in leader state")
+
+            self.match_indices = {}
+            self.next_indices = {}
+            for id in self.conns.get_ids():
+                self.next_indices[id] = len(self.log)
+                self.match_indices[id] = 0
+            self.__send_heartbeat()
+        elif state == RAFTStates.CANDIDATE:
+            self.state = RAFTStates.CANDIDATE
+            log.debug("[RAFT] Now in candidate state")
+            self.__start_election()
+        elif state == RAFTStates.FOLLOWER:
+            self.state = RAFTStates.FOLLOWER
+            log.debug("[RAFT] Now in follower state")
+            self.__reset_election_timer()
+
     def __send_heartbeat(self):
-        msg = append_entries.AppendEntriesRequest(self.term, self.id, 0, None, 0, [])
-        msg = append_entries.AppendEntriesRequest.serialize(msg)
-        self.node.send_to_conns(self.conns.get_conns(), msg)
+        for conn in self.conns.get_conns():
+            c_id = self.conns.get_id(conn)
+            entries = [self.log[i] for i in range(self.next_indices[c_id], len(self.log))]
+            prev_log_idx = self.next_indices[c_id]-1
+            prev_log_term = self.log[prev_log_idx].term if prev_log_idx >= 0 else -1
+            msg = append_entries.AppendEntriesRequest(self.term,
+                                                      self.id,
+                                                      prev_log_idx,
+                                                      prev_log_term,
+                                                      self.commit_index,
+                                                      entries)
+            self.node.send(conn, msg.serialize())
+            self.tentative_nexts[c_id] = len(self.log)
         self.__reset_heartbeat_timer()
 
     def __start_election(self):
@@ -229,11 +347,13 @@ class RAFTNode:
 
     def __reset_heartbeat_timer(self):
         self.timer.cancel()
-        self.timer = threading.Timer(RAFTNode.HEARTBEAT_TIME, self.__on_timeout)
+        self.timer = threading.Timer(
+            RAFTNode.HEARTBEAT_TIME, self.__on_timeout)
         self.timer.start()
 
     def __reset_election_timer(self):
         self.timer.cancel()
-        time = random.uniform(RAFTNode.ELECTION_TIME_MIN, RAFTNode.ELECTION_TIME_MAX)
+        time = random.uniform(RAFTNode.ELECTION_TIME_MIN,
+                              RAFTNode.ELECTION_TIME_MAX)
         self.timer = threading.Timer(time, self.__on_timeout)
         self.timer.start()
