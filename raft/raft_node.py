@@ -1,6 +1,4 @@
 import server.node as node
-import raft.states.state as raft_state
-import raft.states.common as raft_common
 import raft.messages.append_entries as append_entries
 import raft.messages.request_vote as request_vote
 import logging as log
