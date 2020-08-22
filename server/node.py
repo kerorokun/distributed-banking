@@ -50,7 +50,7 @@ class Node:
         self.sock.bind((self.ip, self.port))
         self.sock.listen()
 
-        log.debug(f"Starting node at {self.ip} {self.port}")
+        log.debug(f"[NODE] Starting node at {self.ip} {self.port}")
 
     def serve(self, blocking: bool = True) -> None:
         if blocking:
@@ -61,18 +61,8 @@ class Node:
 
 
     def start(self, blocking: bool = True) -> None:
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.sock.bind((self.ip, self.port))
-        self.sock.listen()
-
-        log.debug(f"Starting node at {self.ip} {self.port}")
-
-        if blocking:
-            self.__listen_for_connections()
-        else:
-            threading.Thread(
-                target=self.__listen_for_connections, daemon=True).start()
+        self.open()
+        self.serve(blocking=blocking)
 
     def connect_to(self, ip: str, port: str) -> None:
         threading.Thread(target=self.__connect_to,

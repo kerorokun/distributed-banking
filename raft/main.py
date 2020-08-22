@@ -27,10 +27,13 @@ def test(node):
     has_commit = False
     while True:
         has_commit = raft_node.commit(str(commit.num))
+        if has_commit:
+            print(f"Committed: {commit.num}")
         time.sleep(1)
 
-def commit_num(num):
-    commit.num = num
+def commit_num(msg):
+    print(f"Applied: {msg}")
+    commit.num = int(msg) + 1
 
 if __name__ == "__main__":
     # Usage: main.py <id> <ip> <port> <others...>

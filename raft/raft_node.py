@@ -84,16 +84,18 @@ class RAFTNode:
     ELECTION_TIME_MAX = 3
 
     def __init__(self, id: str, ip: str, port: int,
-                 on_commit: typing.Callable[[int]] = None,
-                 on_connect: typing.Callable[[node.Node, node.Connection], None] = None,
-                 on_disconnect: typing.Callable[[node.Node, node.Connection], None] = None,
+                 on_commit: typing.Callable[[str]] = None,
+                 on_connect: typing.Callable[[
+                     node.Node, node.Connection], None] = None,
+                 on_disconnect: typing.Callable[[
+                     node.Node, node.Connection], None] = None,
                  on_message: typing.Callable[[node.Node, node.Connection, str], None] = None):
         self.id = id
         self.node = node.Node(ip, port,
                               on_connect=self.on_connect,
                               on_message=self.__on_message,
                               on_disconnect=self.on_disconnect)
-        self.on_commit_callback = on_commit
+        self.on_apply_callback = on_commit
         self.on_connect_callback = on_connect
         self.on_disconnect_callback = on_disconnect
         self.on_message_callback = on_message
@@ -119,7 +121,7 @@ class RAFTNode:
     def start(self, initial_conns: typing.List = []):
         self.node.start(blocking=False)
         initial_conns = set(initial_conns)
-        print(f"Connecting to: {initial_conns}")
+        log.debug(f"[RAFT] Connecting to: {initial_conns}")
         for conn in initial_conns:
             self.node.connect_to(conn[0], conn[1])
         time.sleep(3)
@@ -166,10 +168,10 @@ class RAFTNode:
     def __on_new_conn(self, conn: node.Connection, greeting: str):
         _, id = greeting.split()
         if not self.conns.try_add_conn(id, conn):
-            print(f"{id} already connected. Dropping...")
+            log.debug(f"[RAFT] {id} already connected. Dropping...")
             self.node.disconnect(conn)
         else:
-            print(f"Added new connection {id}")
+            log.debug(f"[RAFT] Added new connection {id}")
 
     def __on_timeout(self):
         self.raft_lock.acquire()
@@ -182,7 +184,7 @@ class RAFTNode:
     def __on_append_entries(self, conn: node.Connection, msg: str) -> bool:
         self.raft_lock.acquire()
         msg = append_entries.AppendEntriesRequest.deserialize(msg)
-        log.debug(f"[RAFT] {msg}")
+        # log.debug(f"[RAFT] {msg}")
 
         # [RPC (1) and (2)] Check if the AppendEntries is of interest
         success = False
@@ -201,6 +203,12 @@ class RAFTNode:
             entries = [LogEntry.from_json(entry) for entry in msg.entries]
             self.log = self.log[:msg.prev_log_index+1] + entries
             self.commit_index = min(msg.leader_commit, len(self.log))
+
+            for i in range(self.last_applied, self.commit_index):
+                if self.on_apply_callback:
+                    self.on_apply_callback(self.log[i].val)
+            self.last_applied = self.commit_index
+
             self.__reset_election_timer()
 
         # Reply back to the request
@@ -222,29 +230,38 @@ class RAFTNode:
             self.raft_lock.release()
             return
 
-        self.next_indices[c_id] = max(self.next_indices[c_id], self.tentative_nexts[c_id])
-        self.match_indices[c_id] = max(self.match_indices[c_id], self.next_indices[c_id]-1)
+        self.next_indices[c_id] = max(
+            self.next_indices[c_id], self.tentative_nexts[c_id])
+        self.match_indices[c_id] = max(
+            self.match_indices[c_id], self.next_indices[c_id]-1)
         self.tentative_nexts[c_id] = -1
 
         # Check to see if a new commit can be included
         match = self.match_indices[c_id]
         if match > self.commit_index and self.log[match].term == self.term:
-            num_match = sum(1 for _, e in self.match_indices.items() if e >= match)
+            num_match = sum(
+                1 for _, e in self.match_indices.items() if e >= match)
             target_num = self.cluster_size // 2
             if num_match >= target_num:
-                log.debug(f"[RAFT] Committed: {match}")
+                # log.debug(f"[RAFT] Committed: {match}")
                 self.commit_index = match
-                if self.on_commit_callback:
-                    self.on_commit_callback(self.commit_index)
+
+                for i in range(self.last_applied, self.commit_index):
+                   if self.on_apply_callback:
+                       self.on_apply_callback(self.log[i].val)
+                self.last_applied = self.commit_index
+
         self.raft_lock.release()
 
     def __on_request_vote(self, conn: node.Connection, msg: str) -> bool:
         msg = request_vote.RequestVoteMessage.deserialize(msg)
 
         self.raft_lock.acquire()
-        if msg.term <= self.term:
-            log.debug("[RAFT] Received vote request but already voted.")
-        else:
+        log_up_to_date = msg.last_log_term > self.term
+        log_up_to_date = log_up_to_date or (
+            msg.last_log_term == self.term and msg.last_log_index >= len(self.log) - 1)
+
+        if self.term < msg.term and log_up_to_date:
             log.debug(
                 f"[RAFT] Received request. Voting for {msg.candidate_id}.")
 
@@ -292,7 +309,8 @@ class RAFTNode:
     def __send_heartbeat(self):
         for conn in self.conns.get_conns():
             c_id = self.conns.get_id(conn)
-            entries = [self.log[i] for i in range(self.next_indices[c_id], len(self.log))]
+            entries = [self.log[i]
+                       for i in range(self.next_indices[c_id], len(self.log))]
             prev_log_idx = self.next_indices[c_id]-1
             prev_log_term = self.log[prev_log_idx].term if prev_log_idx >= 0 else -1
             msg = append_entries.AppendEntriesRequest(self.term,
@@ -308,14 +326,18 @@ class RAFTNode:
     def __start_election(self):
         self.term += 1
 
-        msg = request_vote.RequestVoteMessage(self.term, self.id, 0, None)
+        last_log_idx = len(self.log) - 1
+        last_log_term = self.log[last_log_idx].term if last_log_idx >= 0 else 0
+        msg = request_vote.RequestVoteMessage(
+            self.term, self.id, last_log_idx, last_log_term)
         msg = request_vote.RequestVoteMessage.serialize(msg)
         self.node.send_to_conns(self.conns.get_conns(), msg)
 
         self.num_votes = 1
         self.target_votes = self.cluster_size // 2 + 1
         self.__reset_election_timer()
-        log.debug(f"[RAFT] Election {self.term}: {self.num_votes}/{self.target_votes}")
+        log.debug(
+            f"[RAFT] Election {self.term}: {self.num_votes}/{self.target_votes}")
 
     def __reset_heartbeat_timer(self):
         self.timer.cancel()
