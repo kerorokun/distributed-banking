@@ -17,19 +17,26 @@ import raft.raft_node as raft_node
 import threading
 import time
 
+class Commit:
+    def __init__(self):
+        self.num = 0
+
+commit = Commit()
+
 def test(node):
     has_commit = False
-    num = 0
     while True:
-        has_commit = raft_node.commit(str(num))
-        num += 1
+        has_commit = raft_node.commit(str(commit.num))
         time.sleep(1)
+
+def commit_num(num):
+    commit.num = num
 
 if __name__ == "__main__":
     # Usage: main.py <id> <ip> <port> <others...>
     neighbors = []
     for i in range(4, len(sys.argv), 2):
         neighbors.append((sys.argv[i], sys.argv[i+1]))
-    raft_node = raft_node.RAFTNode(sys.argv[1], sys.argv[2], int(sys.argv[3]))
+    raft_node = raft_node.RAFTNode(sys.argv[1], sys.argv[2], int(sys.argv[3]), on_commit=commit_num)
     threading.Thread(target=test, args=(raft_node,), daemon=True).start()
     raft_node.start(neighbors)

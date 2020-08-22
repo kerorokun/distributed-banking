@@ -31,34 +31,6 @@ class LogEntry:
         return f"LogEntry(term: {self.term}, val: {self.val})"
 
 
-class CommitTask:
-
-    DEFAULT_TIMEOUT = 5
-
-    def __init__(self, target_votes, timeout=DEFAULT_TIMEOUT):
-        self.target_votes = target_votes
-        self.votes = 0
-        self.timer = threading.Timer(timeout, timeout)
-        self.event = threading.Event()
-        self.lock = threading.Lock()
-
-    def start(self) -> bool:
-        self.event.wait()
-
-    def add_commit(self):
-        with self.lock:
-            self.votes += 1
-            if self.votes > self.target_votes:
-                self.timer.cancel()
-                self.event.set()
-                self.success = True
-
-    def timeout(self) -> None:
-        self.success = False
-        self.event.set()
-        self.timer.cancel()
-
-
 class GroupConnectionInfo:
 
     def __init__(self, owner_id):
