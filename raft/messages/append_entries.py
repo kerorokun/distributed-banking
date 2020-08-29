@@ -39,7 +39,7 @@ class AppendEntriesRequest(typing.NamedTuple):
     prev_log_index: int
     prev_log_term: int
     leader_commit: int
-    entries: typing.List[str]
+    entries: typing.List[typing.Any]
 
 
 class AppendEntriesReply(typing.NamedTuple):

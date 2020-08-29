@@ -64,9 +64,9 @@ class Node:
         self.open()
         self.serve(blocking=blocking)
 
-    def connect_to(self, ip: str, port: str) -> None:
+    def connect_to(self, ip: str, port: str, greeting_msg: str="") -> None:
         threading.Thread(target=self.__connect_to,
-                         args=(ip, port), daemon=True).start()
+                         args=(ip, port, greeting_msg), daemon=True).start()
 
     def __send(self, sock: socket.socket, msg: str) -> None:
         msg += self.msg_ending
@@ -113,7 +113,7 @@ class Node:
         except KeyboardInterrupt:
             return
 
-    def __handle_client(self, sock: socket.socket, ip: str, port: str) -> None:
+    def __handle_client(self, sock: socket.socket, ip: str, port: str, greeting_msg: str = "") -> None:
         # Handle the introduction between nodes
         self.__send(sock, f"NODE-INTRODUCTION {self.ip} {self.port}")
         leftover = ""
@@ -146,6 +146,10 @@ class Node:
         if self.on_conn_callback:
             self.on_conn_callback(conn)
 
+        # Send greeting message if applicable:
+        if greeting_msg:
+            self.send(conn, greeting_msg)
+
         # Connection loop
         msgs = initial_msgs
         try:
@@ -169,10 +173,10 @@ class Node:
         log.debug(f"[NODE] Dropping {conn}")
         self.conn_to_should_conn[conn] = False
 
-    def __connect_to(self, ip: str, port: str) -> None:
+    def __connect_to(self, ip: str, port: str, greeting_msg: str=None) -> None:
         try:
             sock = socket.create_connection((ip, port))
-            self.__handle_client(sock, ip, port)
+            self.__handle_client(sock, ip, port, greeting_msg=greeting_msg)
         except Exception:
             return
 

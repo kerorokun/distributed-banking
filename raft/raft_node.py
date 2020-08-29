@@ -92,7 +92,6 @@ class RAFTNode:
                  on_message: typing.Callable[[node.Node, node.Connection, str], None] = None):
         self.id = id
         self.node = node.Node(ip, port,
-                              on_connect=self.on_connect,
                               on_message=self.__on_message,
                               on_disconnect=self.on_disconnect)
         self.on_apply_callback = on_commit
@@ -123,7 +122,7 @@ class RAFTNode:
         initial_conns = set(initial_conns)
         log.debug(f"[RAFT] Connecting to: {initial_conns}")
         for conn in initial_conns:
-            self.node.connect_to(conn[0], conn[1])
+            self.node.connect_to(conn[0], conn[1], greeting_msg=f"ID: {self.id}")
         time.sleep(3)
 
         self.cluster_size = 1 + len(initial_conns)
@@ -132,6 +131,9 @@ class RAFTNode:
         while True:
             pass
 
+    def is_raft_conn(self, conn):
+        return 
+    
     def commit(self, msg: str) -> bool:
         # Launches the work to come back and reply
         self.raft_lock.acquire()
@@ -141,9 +143,6 @@ class RAFTNode:
             success = True
         self.raft_lock.release()
         return success
-
-    def on_connect(self, conn: node.Connection) -> None:
-        self.node.send(conn, f"ID: {self.id}")
 
     def on_disconnect(self, conn: node.Connection) -> None:
         self.conns.try_remove_conn(conn)
