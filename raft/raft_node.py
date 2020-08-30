@@ -19,16 +19,19 @@ class RAFTStates(enum.Enum):
 
 class LogEntry:
 
+    DELIMITER="***"
+
     @classmethod
-    def from_json(cls, json_obj):
-        return cls(json_obj["term"], json_obj["val"])
+    def from_str(cls, serialized):
+        _, term, val = serialized.split(LogEntry.DELIMITER)
+        return cls(int(term), val)
 
     def __init__(self, term: int, val: str):
         self.term = term
         self.val = val
 
     def __repr__(self):
-        return f"LogEntry(term: {self.term}, val: {self.val})"
+        return f"LogEntry{LogEntry.DELIMITER}{self.term}{LogEntry.DELIMITER}{self.val}"
 
 
 class GroupConnectionInfo:
@@ -79,7 +82,7 @@ class GroupConnectionInfo:
 
 class RAFTNode:
 
-    HEARTBEAT_TIME = 0.75
+    HEARTBEAT_TIME = 0.5
     ELECTION_TIME_MIN = 1.5
     ELECTION_TIME_MAX = 3
 
@@ -92,8 +95,9 @@ class RAFTNode:
                  on_message: typing.Callable[[node.Node, node.Connection, str], None] = None):
         self.id = id
         self.node = node.Node(ip, port,
-                              on_message=self.__on_message,
-                              on_disconnect=self.on_disconnect)
+                              on_connect=self.__on_connect,
+                              on_disconnect=self.__on_disconnect,
+                              on_message=self.__on_message)
         self.on_apply_callback = on_commit
         self.on_connect_callback = on_connect
         self.on_disconnect_callback = on_disconnect
@@ -107,7 +111,7 @@ class RAFTNode:
         self.cluster_size = 0
         self.term = 0
         self.leader_id = ""
-        self.log = []
+        self.log = [LogEntry(0, "")]
         self.commit_index = 0
         self.last_applied = 0
         self.num_votes = 0
@@ -122,7 +126,7 @@ class RAFTNode:
         initial_conns = set(initial_conns)
         log.debug(f"[RAFT] Connecting to: {initial_conns}")
         for conn in initial_conns:
-            self.node.connect_to(conn[0], conn[1], greeting_msg=f"ID: {self.id}")
+            self.node.connect_to(conn[0], conn[1])
         time.sleep(3)
 
         self.cluster_size = 1 + len(initial_conns)
@@ -131,20 +135,26 @@ class RAFTNode:
         while True:
             pass
 
-    def is_raft_conn(self, conn):
-        return 
+    def is_raft_conn(self, conn: node.Connection) -> None:
+        return conn in self.conns.get_conns()
+
+    def get_raft_leader_conn(self) -> node.Connection:
+        return self.conns.get_conn(self.leader_id)
     
     def commit(self, msg: str) -> bool:
         # Launches the work to come back and reply
         self.raft_lock.acquire()
         success = False
         if self.state == RAFTStates.LEADER:
-            self.log.append(LogEntry(self.term, msg))
+            self.log.append(LogEntry(self.term, str(msg)))
             success = True
         self.raft_lock.release()
         return success
 
-    def on_disconnect(self, conn: node.Connection) -> None:
+    def __on_connect(self, conn: node.Connection) -> None:
+        self.node.send(conn, f"ID {self.id}")
+
+    def __on_disconnect(self, conn: node.Connection) -> None:
         self.conns.try_remove_conn(conn)
 
     def __on_message(self, conn: node.Connection, msg: str) -> None:
@@ -160,7 +170,8 @@ class RAFTNode:
             self.__on_request_vote_reply(conn, msg)
         elif self.state != RAFTStates.LEADER:
             # Send a rejection message for now
-            self.node.send(conn, "Not a leader")
+            leader_conn = self.get_raft_leader_conn()
+            self.node.send(conn, f"REDIRECT {leader_conn}")
         elif self.on_message_callback:
             self.on_message_callback(self.node, conn, msg)
 
@@ -192,18 +203,18 @@ class RAFTNode:
                 (msg.prev_log_index < 0 or self.log[msg.prev_log_index].term == msg.prev_log_term)):
             success = True
 
+            self.leader_id = msg.leader_id
             # Update the state if necessary
             if self.state != RAFTStates.FOLLOWER:
                 self.term = msg.term
-                self.leader_id = msg.leader_id
                 self.__change_to(RAFTStates.FOLLOWER)
 
             # [RPC (3), (4), (5)] Update the log
-            entries = [LogEntry.from_json(entry) for entry in msg.entries]
+            entries = [LogEntry.from_str(entry) for entry in msg.entries]
             self.log = self.log[:msg.prev_log_index+1] + entries
             self.commit_index = min(msg.leader_commit, len(self.log))
 
-            for i in range(self.last_applied, self.commit_index):
+            for i in range(self.last_applied+1, self.commit_index+1):
                 if self.on_apply_callback:
                     self.on_apply_callback(self.log[i].val)
             self.last_applied = self.commit_index
@@ -223,16 +234,15 @@ class RAFTNode:
             return
 
         msg = append_entries.AppendEntriesReply.deserialize(msg)
+        # log.debug(f"[RAFT] {msg}")
         c_id = self.conns.get_id(conn)
         if not msg.success:
             self.next_indices[c_id] -= 1
             self.raft_lock.release()
             return
 
-        self.next_indices[c_id] = max(
-            self.next_indices[c_id], self.tentative_nexts[c_id])
-        self.match_indices[c_id] = max(
-            self.match_indices[c_id], self.next_indices[c_id]-1)
+        self.next_indices[c_id] = max(self.next_indices[c_id], self.tentative_nexts[c_id])
+        self.match_indices[c_id] = max(self.match_indices[c_id], self.next_indices[c_id]-1)
         self.tentative_nexts[c_id] = -1
 
         # Check to see if a new commit can be included
@@ -242,10 +252,10 @@ class RAFTNode:
                 1 for _, e in self.match_indices.items() if e >= match)
             target_num = self.cluster_size // 2
             if num_match >= target_num:
-                # log.debug(f"[RAFT] Committed: {match}")
+                log.debug(f"[RAFT] Committed: {match}")
                 self.commit_index = match
 
-                for i in range(self.last_applied, self.commit_index):
+                for i in range(self.last_applied+1, self.commit_index+1):
                    if self.on_apply_callback:
                        self.on_apply_callback(self.log[i].val)
                 self.last_applied = self.commit_index

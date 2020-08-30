@@ -14,8 +14,7 @@ class AppendEntriesRequest(typing.NamedTuple):
         _, term, leader_id, prev_log_index, prev_log_term, leader_commit, entries = serialized.split(
             maxsplit=6)
         entries = entries.split(AppendEntriesRequest.ENTRY_DELIMITER)
-        entries = [json.loads(entry) for entry in entries if entry !=
-                   AppendEntriesRequest.EMPTY_ELEMENT]
+        entries = [entry for entry in entries if entry != AppendEntriesRequest.EMPTY_ELEMENT]
         return cls(int(term),
                    leader_id,
                    int(prev_log_index),
@@ -28,7 +27,7 @@ class AppendEntriesRequest(typing.NamedTuple):
         return msg.startswith(AppendEntriesRequest.MSG_PREFIX)
 
     def serialize(self) -> str:
-        entries_dump = [json.dumps(entry.__dict__) for entry in self.entries] if self.entries else [
+        entries_dump = [str(entry) for entry in self.entries] if self.entries else [
             AppendEntriesRequest.EMPTY_ELEMENT]
         entries_dump = AppendEntriesRequest.ENTRY_DELIMITER.join(entries_dump)
         msg = f"{AppendEntriesRequest.MSG_PREFIX} {self.term} {self.leader_id} {self.prev_log_index} {self.prev_log_term} {self.leader_commit} {entries_dump}"
@@ -39,7 +38,7 @@ class AppendEntriesRequest(typing.NamedTuple):
     prev_log_index: int
     prev_log_term: int
     leader_commit: int
-    entries: typing.List[typing.Any]
+    entries: typing.List[str]
 
 
 class AppendEntriesReply(typing.NamedTuple):

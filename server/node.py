@@ -4,11 +4,30 @@ import threading
 import socket
 import sys
 import enum
+import traceback
 import logging as log
 
-class Connection(typing.NamedTuple):
-    ip: str
-    port: str
+class Connection:
+
+    DELIMITER = "==="
+
+    @classmethod
+    def from_str(cls, serialized):
+        _, ip, port = serialized.split(Connection.DELIMITER)
+        return cls(ip, port)
+
+    def __init__(self, ip: str, port: str):
+        self.ip = ip
+        self.port = port
+
+    def __repr__(self):
+        return f"Connection{Connection.DELIMITER}{self.ip}{Connection.DELIMITER}{self.port}"
+
+    def __hash__(self):
+        return hash((self.ip, self.port))
+
+    def __eq__(self, other):
+        return (self.ip, self.port) == (other.ip, other.port)
 
 
 class Node:
@@ -73,7 +92,7 @@ class Node:
         try:
             sock.sendall(msg.encode('utf-8'))
         except Exception as e:
-            log.warn(f"[NODE] Error while sending {e}")
+            log.warn(f"[NODE] Error while sending msg: {e}")
 
     def send(self, conn: Connection, msg: str) -> None:
         sock = self.conn_to_sock[conn]
@@ -161,6 +180,8 @@ class Node:
         except socket.error as e:
             log.debug(f"[NODE] {conn} disconnected.")
         except Exception as e:
+            track = traceback.format_exc()
+            print(track)
             log.warn(f"[NODE] Error during execution: {e}")
 
         # Disconnect, cleanup

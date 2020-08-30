@@ -21,19 +21,24 @@ class Commit:
     def __init__(self):
         self.num = 0
 
+    def __repr__(self):
+        return f"Commit {self.num}"
+
 commit = Commit()
 
 def test(node):
     has_commit = False
     while True:
-        has_commit = raft_node.commit(str(commit.num))
+        new_commit = Commit()
+        new_commit.num = commit.num
+        has_commit = raft_node.commit(new_commit)
         if has_commit:
             print(f"Committed: {commit.num}")
         time.sleep(1)
 
 def commit_num(msg):
     print(f"Applied: {msg}")
-    commit.num = int(msg) + 1
+    commit.num += 1
 
 if __name__ == "__main__":
     # Usage: main.py <id> <ip> <port> <others...>
