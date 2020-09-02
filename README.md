@@ -1,6 +1,12 @@
 # Distributed Banking Application
 This is a small ACID banking application program designed as a learning project. This banking application uses the RAFT consensus algorithm, a timestamped based concurrency protocol, and the two-phase commit protocol. 
 
+## Application Diagram
+For those interested, the way the application is organized in the following:
+<img src="https://github.com/kerorokun/distributed-banking/blob/master/images/overall_organization.png" width="700" />
+
+where each cluster is composed of a variable amount of nodes and powered by the RAFT consensus algorithm. As such, each cluster will have a leader that may shift around in the group according to RAFT.
+
 ## Running the Program
 To run the program:
 1. Launch a branch cluster (Repeat for each branch you want to have): 
@@ -44,9 +50,3 @@ The following commands are available for a client:
 * `BALANCE <branch name> <account name>`: Get the balance of an account at a branch. A transaction must be started.
 * `COMMIT`: Commit the current transaction. A transaction must be started.
 * `ABORT`: Abort the current transaction. A transaction must be started.
-
-## Application Diagram
-For those interested, the way the application is organized in the following:
-<img src="https://github.com/kerorokun/distributed-banking/blob/master/images/overall_organization.png" width="700" />
-
-where each cluster is composed of a variable amount of nodes and powered by the RAFT consensus algorithm. As such, each cluster will have a leader that may shift around in the group according to RAFT.
