@@ -106,6 +106,7 @@ class RAFTNode:
         self.conns = GroupConnectionInfo(self.id)
         self.info = None
         self.raft_lock = threading.Lock()
+        self.apply_lock = threading.Lock()
         self.state = None
         self.timer = threading.Timer(0, self.__on_timeout)
 
@@ -200,6 +201,14 @@ class RAFTNode:
             self.__change_to(RAFTStates.CANDIDATE)
         self.raft_lock.release()
 
+    def __on_apply_log_entry(self):
+        self.apply_lock.acquire()
+        for i in range(self.last_applied+1, self.commit_index+1):
+            if self.on_apply_callback:
+                self.on_apply_callback(self.log[i].val)
+        self.last_applied = self.commit_index
+        self.apply_lock.release()
+
     def __on_append_entries(self, conn: node.Connection, msg: str) -> bool:
         self.raft_lock.acquire()
         msg = append_entries.AppendEntriesRequest.deserialize(msg)
@@ -223,17 +232,17 @@ class RAFTNode:
             self.log = self.log[:msg.prev_log_index+1] + entries
             self.commit_index = min(msg.leader_commit, len(self.log))
 
-            for i in range(self.last_applied+1, self.commit_index+1):
-                if self.on_apply_callback:
-                    self.on_apply_callback(self.log[i].val)
-            self.last_applied = self.commit_index
-
+            # for i in range(self.last_applied+1, self.commit_index+1):
+            #     if self.on_apply_callback:
+            #         self.on_apply_callback(self.log[i].val)
+            # self.last_applied = self.commit_index
             self.__reset_election_timer()
 
         # Reply back to the request
         reply = append_entries.AppendEntriesReply(self.term, success)
         self.node.send(conn, reply.serialize())
         self.raft_lock.release()
+        self.__on_apply_log_entry()
 
     def __on_append_entries_reply(self, conn: node.Connection, msg: str) -> bool:
         self.raft_lock.acquire()
@@ -263,13 +272,14 @@ class RAFTNode:
             if num_match >= target_num:
                 log.debug(f"[RAFT] Committed: {match}")
                 self.commit_index = match
-
-                for i in range(self.last_applied+1, self.commit_index+1):
-                   if self.on_apply_callback:
-                       self.on_apply_callback(self.log[i].val)
-                self.last_applied = self.commit_index
+            # for i in range(self.last_applied+1, self.commit_index+1):
+            #     if self.on_apply_callback:
+            #         self.on_apply_callback(self.log[i].val)
+            # self.last_applied = self.commit_index
 
         self.raft_lock.release()
+        self.__on_apply_log_entry()
+
 
     def __on_request_vote(self, conn: node.Connection, msg: str) -> bool:
         msg = request_vote.RequestVoteMessage.deserialize(msg)

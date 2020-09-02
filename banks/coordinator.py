@@ -57,6 +57,10 @@ class Coordinator:
             self.on_abort(sender_id, node, conn, msg)
         elif msg.startswith("BEGIN"):
             self.on_begin(sender_id, node, conn, msg)
+        elif msg.startswith("CAN_COMMIT"):
+            self.on_can_commit(sender_id, node, conn, msg)
+        elif msg.startswith("COMMIT"):
+            self.on_commit(sender_id, node, conn, msg)
         elif msg.startswith("BRANCH_CONN"):
             _, branch = msg.split()
             print(f"Added branch: {branch}")
@@ -64,44 +68,60 @@ class Coordinator:
             self.branch_queues[branch] = queue.Queue()
 
     def on_message(self, node, conn, msg):
-        commit_msg = ""
+        commit_msg = None
 
         if msg.startswith("BEGIN"):
             with self.timestamp_lock:
                 timestamp = self.next_timestamp
                 self.next_timestamp += 1
             commit_msg = f"BEGIN {timestamp}"
-            # Try to commit the updated msg
-            if not self.node.commit(message_entry.MessageEntry(self.coord_name, conn, commit_msg)):
-                leader_conn = self.node.get_raft_leader_conn()
-                node.send(conn, f"REDIRECT {leader_conn}")
+
         elif msg.startswith("ABORT"):
             timestamp = self.conn_to_timestamp[conn]
             commit_msg = f"ABORT {timestamp}"
-        elif msg.startswith("BANK"):
-            branch = msg.split()[1]
-            if not conn in self.conn_to_timestamp:
-                node.send(conn, "No transaction started")
-                return
 
+        elif msg.startswith("COMMIT"):
+            # Start the two phase commit protocol
             timestamp = self.conn_to_timestamp[conn]
-            if branch in self.branch_to_conns:
-                node.send(self.branch_to_conns[branch], f"{msg} {timestamp}")
-                try:
-                    response = self.branch_queues[branch].get(timeout=10)
-                    node.send(conn, response)
-                except queue.Empty:
-                    node.send(conn, "Failed due to timeout")
-            else:
-                node.send(conn, "FAILED: No branch")
+            commit_msg = f"CAN_COMMIT {timestamp}"
+
+        elif msg.startswith("BANK"):
+            self.on_bank_msg(node, conn, msg)
         elif msg.startswith("BRANCH_CONN"):
             self.node.commit(message_entry.MessageEntry(self.coord_name, conn, msg))
         elif msg.startswith("BRANCH_RESPONSE"):
             branch = msg.split()[1]
             if branch in self.branch_to_conns:
                 self.branch_queues[branch].put(msg)
+        
+        if commit_msg:
+            if not self.node.commit(message_entry.MessageEntry(self.coord_name, conn, commit_msg)):
+                leader_conn = self.node.get_raft_leader_conn()
+                node.send(conn, f"REDIRECT {leader_conn}")
+
+    def on_bank_msg(self, node, conn, msg):
+        branch = msg.split()[1]
+        if not conn in self.conn_to_timestamp:
+            node.send(conn, "No transaction started")
+            return
+
+        timestamp = self.conn_to_timestamp[conn]
+        if branch in self.branch_to_conns:
+            node.send(self.branch_to_conns[branch], f"{msg} {timestamp}")
+            try:
+                response = self.branch_queues[branch].get(timeout=10)
+                if "ABORT" in response:
+                    # Commit an ABORT to the log
+                    self.node.commit(message_entry.MessageEntry(self.coord_name, conn, f"ABORT {timestamp}"))
+                else:
+                    node.send(conn, response)
+            except queue.Empty:
+                node.send(conn, "Failed due to timeout")
+        else:
+            node.send(conn, "FAILED: No branch")
 
     def on_begin(self, sender_id, node, conn, msg):
+        print(f"[COORDINATOR] BEGINNING")
         _, timestamp = msg.split()
         timestamp = int(timestamp)
         with self.timestamp_lock:
@@ -114,4 +134,49 @@ class Coordinator:
 
     def on_abort(self, sender_id, node, conn, msg):
         if sender_id == self.coord_name:
+            _, timestamp = msg.split()
+            timestamp = int(timestamp)
+            response = self.abort(timestamp)
             node.send(conn, "ABORT OK")
+
+    def abort(self, timestamp):
+        # Notify all branches to abort timestamp
+        msg = f"ABORT {timestamp}"
+        self.node.node.send_to_conns(self.branch_to_conns.values(), msg)
+        
+        for branch_queue in self.branch_queues.values():
+            response = branch_queue.get()
+        return "OK"
+
+    def on_can_commit(self, sender_id, node, conn, msg):
+        if sender_id != self.coord_name:
+            return
+
+        # Start the commit procedure: Ask all the branches if they're ok committing
+        print("CAN_COMMIT")
+        _, timestamp = msg.split()
+        msg = f"CAN_COMMIT {timestamp}"
+        node.send_to_conns(self.branch_to_conns.values(), msg)
+        
+        should_abort = False
+        for branch_queue in self.branch_queues.values():
+            response = branch_queue.get()
+            should_abort = should_abort and "ABORT" in response
+
+        # Double checking if committing is ok
+        next_step = "COMMIT" if not should_abort else "ABORT"
+        print(f"CAN_COMMIT: {next_step}")
+        self.node.commit(message_entry.MessageEntry(self.coord_name, conn, f"{next_step} {timestamp}"))
+        print(f"CAN_COMMIT: committed")
+
+    def on_commit(self, sender_id, node, conn, msg):
+        if sender_id != self.coord_name:
+            return
+
+        print("COMMIT")
+        _, timestamp = msg.split()
+        node.send_to_conns(self.branch_to_conns.values(), msg)
+        for branch_queue in self.branch_queues.values():
+            response = branch_queue.get()
+        node.send(conn, response)
+        

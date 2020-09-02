@@ -111,9 +111,9 @@ class Branch:
             self.on_abort(sender_id, node, conn, msg)
         elif msg.startswith("BANK_DEPOSIT"):
             self.on_deposit(sender_id, node, conn, msg)
-        elif msg.startswith("WITHDRAW"):
+        elif msg.startswith("BANK_WITHDRAW"):
             self.on_withdraw(sender_id, node, conn, msg)
-        elif msg.startswith("BALANCE"):
+        elif msg.startswith("BANK_BALANCE"):
             self.on_balance(sender_id, node, conn, msg)
         elif msg.startswith("COMMIT"):
             self.on_commit(sender_id, node, conn, msg)
@@ -123,8 +123,7 @@ class Branch:
     def on_message(self, node, conn, msg):
         commit_msg = ""
 
-        if msg.startswith("BANK_DEPOSIT"):
-            print(msg)
+        if any(msg.startswith(s) for s in ["BANK", "ABORT", "CAN_COMMIT", "COMMIT"]):
             commit_msg = msg
 
             if not self.node.commit(message_entry.MessageEntry(self.branch_id, conn, commit_msg)):
@@ -133,10 +132,6 @@ class Branch:
 
     def send_response(self, node, conn, msg):
         node.send(conn, f"BRANCH_RESPONSE {self.branch_name} {msg}")
-
-    def on_abort(self, sender_id, node, conn, msg):
-        # Abort your actions
-        pass
 
     def on_deposit(self, sender_id, node, conn, msg):
         _, _, acc, amt, timestamp = msg.split()
@@ -156,14 +151,96 @@ class Branch:
             self.send_response(node, conn, response)
 
     def on_withdraw(self, sender_id, node, conn, msg):
-        pass
+        _, _, acc, amt, timestamp = msg.split()
+        timestamp, amt = int(timestamp), float(amt)
+
+        success, result = self.try_read(acc, timestamp)
+        if success == TimestampAction.OK:
+            success, result = self.try_add(acc, timestamp, -amt)
+
+        if success == TimestampAction.OK:
+            response = str(result)
+        else:
+            response = "ABORT"
+
+        if sender_id == self.branch_id:
+            self.send_response(node, conn, response)
 
     def on_balance(self, sender_id, node, conn, msg):
+        _, _, acc, timestamp = msg.split()
+        timestamp = int(timestamp)
+
+        success, result = self.try_read(acc, timestamp)
+        response = result if success == TimestampAction.OK else "ABORT"
+
         if sender_id == self.branch_id:
-            node.send(conn, f"BRANCH_RESPONSE {self.branch_name} DEPOSITTED OK")
+            self.send_response(node, conn, response)
+
+    def on_abort(self, sender_id, node, conn, msg):
+        _, timestamp = msg.split()
+        timestamp = int(timestamp)
+
+        if timestamp in self.active_transactions:
+            self.acc_lock.acquire()
+            trans = self.transaction_states[timestamp]
+
+            # Roll back additions
+            for acc, amt in trans.changes.items():
+                if acc in self.accounts:
+                    self.accounts[acc].balance -= amt
+
+            # Roll back account creations
+            for acc in trans.new_accounts:
+                if acc in self.accounts and self.accounts[acc].balance == 0:
+                    self.accounts.pop(acc)
+                    
+            # Reset the values to the original values
+            self.transaction_states.pop(timestamp)
+            self.active_transactions.discard(timestamp)
+            self.aborted_transactions.add(timestamp)
+            self.acc_lock.release()
+
+        if sender_id == self.branch_id:
+            self.send_response(node, conn, "ABORT IS OK")
 
     def on_commit(self, sender_id, node, conn, msg):
-        pass
+        _, timestamp = msg.split()
+        timestamp = int(timestamp)
 
+        # Go ahead and commit the changes
+        self.active_transactions.discard(timestamp)
+        if sender_id == self.branch_id:
+            self.send_response(node, conn, "OK")
+        
     def on_can_commit(self, sender_id, node, conn, msg):
-        pass
+        _, timestamp = msg.split()
+        timestamp = int(timestamp)
+
+        should_abort = False
+
+        if timestamp in self.active_transactions:
+            curr_trans = self.transaction_states[timestamp]
+
+            # Loop through dependencies
+            for d in curr_trans.dependencies:
+                if d == timestamp:
+                    break
+                print(f"{timestamp} dependent on {d}")
+                if d in self.aborted_transactions:
+                    should_abort = True
+                    break
+                while d in self.active_transactions:
+                    # Wait until the dependency is no longer active
+                    pass
+            
+            # Loop through transaction
+            with self.acc_lock:
+                # Double check for no negative balances
+                for acc in curr_trans.changes:
+                    if self.accounts[acc].balance < 0:
+                        should_abort = True
+                        break
+
+        if sender_id == self.branch_id:
+            response = "ABORT" if should_abort else "OK"
+            self.send_response(node, conn, response)
