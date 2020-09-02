@@ -232,10 +232,6 @@ class RAFTNode:
             self.log = self.log[:msg.prev_log_index+1] + entries
             self.commit_index = min(msg.leader_commit, len(self.log))
 
-            # for i in range(self.last_applied+1, self.commit_index+1):
-            #     if self.on_apply_callback:
-            #         self.on_apply_callback(self.log[i].val)
-            # self.last_applied = self.commit_index
             self.__reset_election_timer()
 
         # Reply back to the request
@@ -272,11 +268,6 @@ class RAFTNode:
             if num_match >= target_num:
                 log.debug(f"[RAFT] Committed: {match}")
                 self.commit_index = match
-            # for i in range(self.last_applied+1, self.commit_index+1):
-            #     if self.on_apply_callback:
-            #         self.on_apply_callback(self.log[i].val)
-            # self.last_applied = self.commit_index
-
         self.raft_lock.release()
         self.__on_apply_log_entry()
 

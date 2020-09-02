@@ -14,7 +14,7 @@ root.addHandler(handler)
 parser = argparse.ArgumentParser(description="Start a coordinator node")
 parser.add_argument("--ip", type=str)
 parser.add_argument("--port", type=int)
-parser.add_argument("--name", type=str)
+parser.add_argument("--id", type=str)
 parser.add_argument("--coordinators", nargs="+", help="the other coordinator nodes in the RAFT group")
 parser.add_argument("--branches", nargs="+", help="the branches that this coordinator will work with")
 
@@ -30,4 +30,4 @@ if __name__ == "__main__":
         for i in range(0, len(args.branches), 2):
             branches.append((args.branches[i], args.branches[i+1]))
 
-    coord = coordinator.Coordinator(args.name, args.ip, int(args.port), coordinators, branches)
+    coord = coordinator.Coordinator(args.id, args.ip, int(args.port), coordinators, branches)
