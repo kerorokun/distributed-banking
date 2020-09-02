@@ -3,6 +3,7 @@ import threading
 import json
 import queue
 import argparse
+import time
 import raft.raft_node as raft_node
 import server.node as node
 import banks.message_entry as message_entry
@@ -22,9 +23,14 @@ class Coordinator:
         self.timestamp_lock = threading.Lock()
         self.branch_queues = {}
         self.branch_to_conns = {}
+        self.connected_branches = set()
 
         self.node.start(other_coordinators, blocking=False)
 
+        # TODO: This pause is so that the coordinator can safely setup everything before
+        # connecting to the branches
+        # This is merely for now
+        time.sleep(4)
         for branch in branches:
             self.node.node.connect_to(branch[0], branch[1])
 
@@ -35,7 +41,7 @@ class Coordinator:
         pass
 
     def on_disconnect(self, node, conn):
-        # TODO
+        # TODO: Handle disconnect of branches
         pass
 
     def on_cmd_commit(self, conn_msg):
@@ -55,6 +61,7 @@ class Coordinator:
             _, branch = msg.split()
             print(f"Added branch: {branch}")
             self.branch_to_conns[branch] = conn
+            self.branch_queues[branch] = queue.Queue()
 
     def on_message(self, node, conn, msg):
         commit_msg = ""
@@ -72,14 +79,27 @@ class Coordinator:
             timestamp = self.conn_to_timestamp[conn]
             commit_msg = f"ABORT {timestamp}"
         elif msg.startswith("BANK"):
-            print(msg)
             branch = msg.split()[1]
+            if not conn in self.conn_to_timestamp:
+                node.send(conn, "No transaction started")
+                return
+
+            timestamp = self.conn_to_timestamp[conn]
             if branch in self.branch_to_conns:
-                node.send(self.branch_to_conns[branch], msg)
+                node.send(self.branch_to_conns[branch], f"{msg} {timestamp}")
+                try:
+                    response = self.branch_queues[branch].get(timeout=10)
+                    node.send(conn, response)
+                except queue.Empty:
+                    node.send(conn, "Failed due to timeout")
             else:
                 node.send(conn, "FAILED: No branch")
         elif msg.startswith("BRANCH_CONN"):
             self.node.commit(message_entry.MessageEntry(self.coord_name, conn, msg))
+        elif msg.startswith("BRANCH_RESPONSE"):
+            branch = msg.split()[1]
+            if branch in self.branch_to_conns:
+                self.branch_queues[branch].put(msg)
 
     def on_begin(self, sender_id, node, conn, msg):
         _, timestamp = msg.split()

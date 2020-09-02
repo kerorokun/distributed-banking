@@ -45,7 +45,7 @@ class Client:
 
     def on_deposit(self, msg):
         _, branch, acc, amt = msg.split()
-        self.node.send(self.curr_coord_conn, f"BANK {branch} {acc} {amt}")
+        self.node.send(self.curr_coord_conn, f"BANK_DEPOSIT {branch} {acc} {amt}")
         response = self.coord_queue.get()
         if response.startswith("REDIRECT"):
             self.on_redirect(response)

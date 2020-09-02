@@ -30,28 +30,6 @@ class TransactionState:
         self.dependencies.add(wts)
 
 
-class CommitEvent:
-
-    def __init__(self, timeout=5):
-        self.event = threading.Event()
-        self.timer = threading.Timer(timeout, self.on_timeout)
-        self.success = False
-
-    def start(self):
-        self.timer.start()
-        self.event.wait()
-        self.timer.cancel()
-        return self.success
-
-    def complete(self):
-        self.success = True
-        self.event.set()
-
-    def on_timeout(self):
-        self.success = False
-        self.event.set()
-
-
 class Branch:
 
     def __init__(self, branch_name, branch_id, ip, port, other_branches):
@@ -71,13 +49,11 @@ class Branch:
         self.active_transactions = set()
         self.aborted_transactions = set()
         self.replies = {}
-        self.highest_timestamp = 0
         self.timestamp_commit_events = {}
 
         self.node.start(other_branches, blocking=True)
     
     def on_connect(self, node, conn):
-        print("Custom connect")
         node.send(conn, f"BRANCH_CONN {self.branch_name}")
 
     def try_read(self, acc, timestamp):
@@ -107,7 +83,7 @@ class Branch:
             account = self.accounts[acc]
 
             if account.rts > timestamp:
-                return TimestampAction.ABORT
+                return (TimestampAction.ABORT, None)
             
             account.wts = timestamp
             if timestamp not in self.active_transactions:
@@ -120,7 +96,7 @@ class Branch:
 
             account.balance += amt
             curr_trans.changes[acc] += amt
-            return TimestampAction.OK
+            return (TimestampAction.OK, account.balance)
 
     def on_cmd_commit(self, conn_msg):
         print(f"[BRANCH]: {conn_msg}")
@@ -133,7 +109,7 @@ class Branch:
         # Handle messages from the client
         if msg.startswith("ABORT"):
             self.on_abort(sender_id, node, conn, msg)
-        elif msg.startswith("DEPOSIT"):
+        elif msg.startswith("BANK_DEPOSIT"):
             self.on_deposit(sender_id, node, conn, msg)
         elif msg.startswith("WITHDRAW"):
             self.on_withdraw(sender_id, node, conn, msg)
@@ -147,7 +123,7 @@ class Branch:
     def on_message(self, node, conn, msg):
         commit_msg = ""
 
-        if msg.startswith("DEPOSIT"):
+        if msg.startswith("BANK_DEPOSIT"):
             print(msg)
             commit_msg = msg
 
@@ -155,20 +131,36 @@ class Branch:
                 leader_conn = self.node.get_raft_leader_conn()
                 node.send(conn, f"REDIRECT {leader_conn}")
 
+    def send_response(self, node, conn, msg):
+        node.send(conn, f"BRANCH_RESPONSE {self.branch_name} {msg}")
+
     def on_abort(self, sender_id, node, conn, msg):
         # Abort your actions
         pass
 
     def on_deposit(self, sender_id, node, conn, msg):
-        print(msg)
+        _, _, acc, amt, timestamp = msg.split()
+        timestamp, amt = int(timestamp), float(amt)
+        response = ""
+
+        success, result = self.try_read(acc, timestamp)
+        if success != TimestampAction.ABORT:
+            success, result = self.try_add(acc, timestamp, amt)
+
+        if success != TimestampAction.ABORT:
+            response = str(result)
+        else:
+            response = "ABORT"
+        
         if sender_id == self.branch_id:
-            node.send(conn, "DEPOSITTED OK")
+            self.send_response(node, conn, response)
 
     def on_withdraw(self, sender_id, node, conn, msg):
         pass
 
     def on_balance(self, sender_id, node, conn, msg):
-        pass
+        if sender_id == self.branch_id:
+            node.send(conn, f"BRANCH_RESPONSE {self.branch_name} DEPOSITTED OK")
 
     def on_commit(self, sender_id, node, conn, msg):
         pass
