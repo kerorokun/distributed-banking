@@ -1,8 +1,4 @@
 import sys
-import os
-# NOTE: This is needed to allow this to be a standalone
-sys.path.append(os.path.abspath(".."))
-
 import queue
 import threading
 import server.node as node
@@ -29,18 +25,16 @@ class Client:
             if 'QUIT' in msg:
                 sys.exit(0)
             if not self.is_transacting and 'BEGIN' in msg:
-                self.handle_begin()
+                self.on_begin()
+            elif self.is_transacting and 'DEPOSIT' in msg:
+                self.on_deposit(msg)
             else:
                 print('Invalid message. Make sure you begin a transaction.')
 
     def on_coord_message(self, conn, msg):
-        print(msg)
-        if msg.startswith("REDIRECT"):
-            self.on_not_leader(conn, msg)
-        else:
-            self.coord_queue.put(msg)
+        self.coord_queue.put(msg)
 
-    def on_not_leader(self, conn, msg):
+    def on_redirect(self, msg):
         _, leader_conn = msg.split()
         leader_conn = node.Connection.from_str(leader_conn)
         self.node.disconnect(self.curr_coord_conn)
@@ -49,19 +43,36 @@ class Client:
     def on_connect(self, conn):
         self.curr_coord_conn = conn
 
-    def handle_begin(self):
+    def on_deposit(self, msg):
+        _, branch, acc, amt = msg.split()
+        self.node.send(self.curr_coord_conn, f"BANK {branch} {acc} {amt}")
+        response = self.coord_queue.get()
+        if response.startswith("REDIRECT"):
+            self.on_redirect(response)
+        else:
+            print("DEPOSIT RESPONSE")
+            print(response)
+
+    def empty_coord_queue(self):
+        while not self.coord_queue.empty():
+            try:
+                self.coord_queue.get(False)
+            except:
+                continue
+    
+    def on_begin(self):
         print("SENDING BEGIN")
         self.node.send(self.curr_coord_conn, "BEGIN")
+        self.empty_coord_queue()
+        response = self.coord_queue.get()
+
+        if response.startswith("REDIRECT"):
+            self.on_redirect(response)
+        else:
+            print("OK TO BEGIN")
+            self.is_transacting = True
 
     def __input_loop(self):
         while True:
             for msg in sys.stdin:
                 self.input_queue.put(msg)
-
-
-if __name__ == "__main__":
-    ip = sys.argv[1]
-    port = int(sys.argv[2])
-    coordinator = (sys.argv[3], sys.argv[4])
-    client = Client(ip, port)
-    client.start(start_coordinator=coordinator)

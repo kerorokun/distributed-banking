@@ -1,7 +1,8 @@
-import raft.raft_node as raft_node
 import collections
 import threading
 import enum
+import raft.raft_node as raft_node
+import banks.message_entry as message_entry
 
 
 class TimestampAction(enum.Enum):
@@ -53,10 +54,13 @@ class CommitEvent:
 
 class Branch:
 
-    def __init__(self, branch_name, ip, port, branches, addresses, ports):
-        self.node = raft_node.RAFTNode(branch_name, ip, port,
+    def __init__(self, branch_name, branch_id, ip, port, other_branches):
+        self.node = raft_node.RAFTNode(branch_id, ip, port, branch_name,
+                                       on_connect=self.on_connect,
                                        on_commit=self.on_cmd_commit,
                                        on_message=self.on_message)
+        self.branch_name = branch_name
+        self.branch_id = branch_id
 
         # Setup the accounts
         self.accounts = collections.defaultdict(lambda: None)
@@ -69,6 +73,12 @@ class Branch:
         self.replies = {}
         self.highest_timestamp = 0
         self.timestamp_commit_events = {}
+
+        self.node.start(other_branches, blocking=True)
+    
+    def on_connect(self, node, conn):
+        print("Custom connect")
+        node.send(conn, f"BRANCH_CONN {self.branch_name}")
 
     def try_read(self, acc, timestamp):
         with self.acc_lock:
@@ -112,53 +122,56 @@ class Branch:
             curr_trans.changes[acc] += amt
             return TimestampAction.OK
 
-    def on_cmd_commit(self, val):
-        self.highest_timestamp = max(self.highest_timestamp, val)
+    def on_cmd_commit(self, conn_msg):
+        print(f"[BRANCH]: {conn_msg}")
+        msg_entry = message_entry.MessageEntry.from_str(conn_msg)
+        conn = msg_entry.conn
+        msg = msg_entry.msg
+        sender_id = msg_entry.sender_id
 
-    def on_message(self, node, conn, msg):
+        node = self.node.node
         # Handle messages from the client
         if msg.startswith("ABORT"):
-            self.on_abort(node, conn, msg)
+            self.on_abort(sender_id, node, conn, msg)
         elif msg.startswith("DEPOSIT"):
-            self.on_deposit(node, conn, msg)
+            self.on_deposit(sender_id, node, conn, msg)
         elif msg.startswith("WITHDRAW"):
-            self.on_withdraw(node, conn, msg)
+            self.on_withdraw(sender_id, node, conn, msg)
         elif msg.startswith("BALANCE"):
-            self.on_balance(node, conn, msg)
+            self.on_balance(sender_id, node, conn, msg)
         elif msg.startswith("COMMIT"):
-            self.on_commit(node, conn, msg)
+            self.on_commit(sender_id, node, conn, msg)
         elif msg.startswith("CAN_COMMIT"):
-            self.on_can_commit(node, conn, msg)
+            self.on_can_commit(sender_id, node, conn, msg)
 
-    def on_begin(self, node, conn, msg):
-        next_timestamp = self.highest_timestamp + 1
-        if self.node.commit(next_timestamp):
-            # Queue up an event and wait
-            self.timestamp_commit_events[next_timestamp] = CommitEvent()
-            if self.timestamp_commit_events[next_timestamp].start():
-                node.send(conn, f"BEGIN {next_timestamp}")
-                # TODO: Add a lock here
-                self.highest_timestamp = next_timestamp
-            else:
-                node.send(conn, "ABORT")
-        else:
-            node.send(conn, "NOT_LEADER")
+    def on_message(self, node, conn, msg):
+        commit_msg = ""
 
-    def on_abort(self, node, conn, msg):
+        if msg.startswith("DEPOSIT"):
+            print(msg)
+            commit_msg = msg
+
+            if not self.node.commit(message_entry.MessageEntry(self.branch_id, conn, commit_msg)):
+                leader_conn = self.node.get_raft_leader_conn()
+                node.send(conn, f"REDIRECT {leader_conn}")
+
+    def on_abort(self, sender_id, node, conn, msg):
         # Abort your actions
         pass
 
-    def on_deposit(self, node, conn, msg):
+    def on_deposit(self, sender_id, node, conn, msg):
+        print(msg)
+        if sender_id == self.branch_id:
+            node.send(conn, "DEPOSITTED OK")
+
+    def on_withdraw(self, sender_id, node, conn, msg):
         pass
 
-    def on_withdraw(self, node, conn, msg):
+    def on_balance(self, sender_id, node, conn, msg):
         pass
 
-    def on_balance(self, node, conn, msg):
+    def on_commit(self, sender_id, node, conn, msg):
         pass
 
-    def on_commit(self, node, conn, msg):
-        pass
-
-    def on_can_commit(self, node, conn, msg):
+    def on_can_commit(self, sender_id, node, conn, msg):
         pass

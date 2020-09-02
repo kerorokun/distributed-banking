@@ -86,7 +86,7 @@ class RAFTNode:
     ELECTION_TIME_MIN = 1.5
     ELECTION_TIME_MAX = 3
 
-    def __init__(self, id: str, ip: str, port: int,
+    def __init__(self, id: str, ip: str, port: int, group_name: str,
                  on_commit: typing.Callable[[str]] = None,
                  on_connect: typing.Callable[[
                      node.Node, node.Connection], None] = None,
@@ -94,6 +94,7 @@ class RAFTNode:
                      node.Node, node.Connection], None] = None,
                  on_message: typing.Callable[[node.Node, node.Connection, str], None] = None):
         self.id = id
+        self.group_name = group_name
         self.node = node.Node(ip, port,
                               on_connect=self.__on_connect,
                               on_disconnect=self.__on_disconnect,
@@ -121,7 +122,7 @@ class RAFTNode:
         self.match_indices = {}
         self.tentative_nexts = {}
 
-    def start(self, initial_conns: typing.List = []):
+    def start(self, initial_conns: typing.List = [], blocking=True):
         self.node.start(blocking=False)
         initial_conns = set(initial_conns)
         log.debug(f"[RAFT] Connecting to: {initial_conns}")
@@ -132,8 +133,9 @@ class RAFTNode:
         self.cluster_size = 1 + len(initial_conns)
         self.__change_to(RAFTStates.FOLLOWER)
 
-        while True:
-            pass
+        if blocking:
+            while True:
+                pass
 
     def is_raft_conn(self, conn: node.Connection) -> None:
         return conn in self.conns.get_conns()
@@ -152,10 +154,14 @@ class RAFTNode:
         return success
 
     def __on_connect(self, conn: node.Connection) -> None:
-        self.node.send(conn, f"ID {self.id}")
+        self.node.send(conn, f"ID {self.group_name} {self.id}")
+        if self.on_connect_callback:
+            self.on_connect_callback(self.node, conn)
 
     def __on_disconnect(self, conn: node.Connection) -> None:
         self.conns.try_remove_conn(conn)
+        if self.on_disconnect_callback:
+            self.on_disconnect_callback(self.node, conn)
 
     def __on_message(self, conn: node.Connection, msg: str) -> None:
         if msg.startswith("ID"):
@@ -176,7 +182,10 @@ class RAFTNode:
             self.on_message_callback(self.node, conn, msg)
 
     def __on_new_conn(self, conn: node.Connection, greeting: str):
-        _, id = greeting.split()
+        _, group_name, id = greeting.split()
+        if group_name != self.group_name:
+            return
+
         if not self.conns.try_add_conn(id, conn):
             log.debug(f"[RAFT] {id} already connected. Dropping...")
             self.node.disconnect(conn)
